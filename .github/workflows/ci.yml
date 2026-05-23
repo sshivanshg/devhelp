@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: CLI smoke test
+        run: |
+          node "$GITHUB_WORKSPACE/dist/cli.js" --version
+          node "$GITHUB_WORKSPACE/dist/cli.js" --help
+
+      - name: Smoke test — recognized stack should exit 0
+        run: |
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+          echo "20.11.1" > .nvmrc
+          echo '{"name":"smoke","packageManager":"pnpm@9.0.0","scripts":{"dev":"vite","test":"vitest"}}' > package.json
+          touch pnpm-lock.yaml
+          node "$GITHUB_WORKSPACE/dist/cli.js" --offline --dry-run --cwd /tmp/smoke "set up this project"
+
+      - name: Smoke test — unsupported stack should exit non-zero
+        run: |
+          mkdir -p /tmp/unsupported && cd /tmp/unsupported
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(TestProject)
+          EOF
+          cat > Makefile <<'EOF'
+          all:
+          	echo "build"
+          EOF
+          if node "$GITHUB_WORKSPACE/dist/cli.js" --offline --dry-run --cwd /tmp/unsupported "set up this project"; then
+            echo "FAIL: unsupported stack should have exited non-zero"
+            exit 1
+          else
+            echo "PASS: correctly refused unsupported stack"
+          fi

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.env
+.env.local
+.DS_Store
+.npmrc
+CLAUDE.md
+# Internal: stress test artifacts and overnight logs (not for the public repo)
+stress-test/
+overnight-log.md
+docs/trial-*.md

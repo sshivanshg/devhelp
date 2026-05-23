@@ -1,0 +1,11 @@
+(lang dune 3.13)
+(name my_ocaml_project)
+(generate_opam_files true)
+(source (github user/my_ocaml_project))
+(package
+  (name my_ocaml_project)
+  (depends
+    (ocaml (>= 5.1))
+    (dune (>= 3.0))
+    lwt
+    (alcotest :with-test)))

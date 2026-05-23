@@ -1,0 +1,15 @@
+stress-test/
+test-fixtures/
+overnight-log.md
+v2-log.md
+CLAUDE_CODE_MASTER_OVERNIGHT.md
+CLAUDE_CODE_MASTER_V2.md
+docs/
+src/
+tsconfig.json
+*.log
+.env
+.env.*
+coverage/
+.nyc_output/
+.github/

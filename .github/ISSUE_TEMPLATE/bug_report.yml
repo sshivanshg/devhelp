@@ -1,0 +1,64 @@
+name: Bug report
+description: devhelp did something wrong, or failed to do something right.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, what actually happened?
+      placeholder: |
+        I ran `devhelp "set up vercel/next.js"` and it tried to install Node 18 instead of 20.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dry-run-output
+    attributes:
+      label: Dry-run output
+      description: Re-run with `--dry-run` and paste the full output. This is the single most useful piece of info.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS + architecture
+      placeholder: macOS 15.4 (arm64) / Ubuntu 24.04 (x86_64)
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`
+      placeholder: v20.11.1
+    validations:
+      required: true
+
+  - type: input
+    id: devhelp-version
+    attributes:
+      label: devhelp version
+      description: Output of `devhelp --version`
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Offline
+        - AI-assisted
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Repo link, relevant manifests, hunches, screenshots — anything.

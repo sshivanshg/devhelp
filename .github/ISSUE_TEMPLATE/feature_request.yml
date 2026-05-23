@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a new detector, tool, or capability.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: pain
+    attributes:
+      label: What pain are you hitting?
+      description: Describe the workflow that's currently painful. Concrete scenarios beat abstract requests.
+      placeholder: |
+        Every time I clone a Django repo, I have to figure out which Python version to use, set up a venv, install psycopg2 system deps...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should devhelp do? A sample CLI invocation + expected output is ideal.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which mode does this belong in?
+      options:
+        - Offline (deterministic playbook)
+        - AI-assisted (agent tool)
+        - Both
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other tools that solve this, or simpler workarounds.

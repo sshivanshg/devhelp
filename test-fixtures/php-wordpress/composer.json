@@ -1,0 +1,6 @@
+{
+  "require": {
+    "php": ">=7.4",
+    "johnpbloch/wordpress": "~6.4"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "devhelp-cli",
+  "version": "0.4.0",
+  "description": "Clone an OSS repo, get a working dev environment. Deterministic by default — detects runtimes, picks the right package manager from the lockfile, runs install, copies env files, generates Prisma client, installs Playwright. Uses your existing mise/asdf/volta if present.",
+  "type": "module",
+  "bin": {
+    "devhelp": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "devops",
+    "ai",
+    "agent",
+    "developer-tools",
+    "environment-setup",
+    "onboarding",
+    "nvm",
+    "pyenv",
+    "rustup",
+    "cli"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/devhelp/devhelp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devhelp/devhelp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/devhelp/devhelp/issues"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "boxen": "^8.0.1",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "execa": "^9.5.1",
+    "listr2": "^8.3.3",
+    "ora": "^8.1.1",
+    "simple-git": "^3.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.7"
+  },
+  "author": "Shivansh Gupta"
+}
