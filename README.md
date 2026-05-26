@@ -10,7 +10,7 @@
 ```
 
 **Clone an OSS repo. Get a working dev environment.**
-Deterministic by default. Honest about what it can't do.
+Fully deterministic. Honest about what it can't do.
 
 [Install](#install) · [Receipts](#receipts) · [Why not mise?](#why-not-mise) · [How it works](#how-it-works) · [Examples](#examples) · [Contributing](#contributing)
 
@@ -40,14 +40,7 @@ devhelp "Set me up to contribute to facebook/react"
 - Detects your framework (Next.js, Vite, Astro, Nuxt, SvelteKit, NestJS, Django, FastAPI…) and shows the real dev URL at the end
 - Prints one of four explicit states at the end: `READY` (everything worked), `INCOMPLETE` (a critical step failed — exit 1), `UNSUPPORTED` (stack not recognized — exit 1), or `INFORM` (recognized but auto-install isn't safe). Never a fake-green panel on a real failure.
 
-It works in **two modes**:
-
-| Mode | When | Needs |
-|---|---|---|
-| **Offline** (default if no key) | Deterministic playbook | Nothing |
-| **AI-assisted** | When `ANTHROPIC_API_KEY` is set | An Anthropic API key |
-
-Offline mode handles the boring 80% with no network calls to any AI provider — pure rules + lockfile reading. AI mode is opt-in for repos with non-standard build scripts. See [Honest about the AI mode](#honest-about-the-ai-mode) for what it actually does and doesn't.
+It's **fully deterministic**: pure rules + lockfile reading, no LLM and no network calls to any AI provider. The only network it touches is cloning the repo and downloading the runtimes/packages the project itself asks for.
 
 ## Receipts
 
@@ -71,44 +64,44 @@ Full comparison vs. mise, asdf, volta, corepack, devbox, devenv.sh, and devconta
 
 ## Coverage (v0.4)
 
-29 ecosystems covered — ~99% of real OSS repos on GitHub. v0.4 added Swift/iOS, Android native, React Native, Expo, Haskell, Scala, Clojure, R, Julia, Zig, OCaml, Bazel, Nx, and INFORM panels for Terraform/Ansible/Helm/Pulumi.
+31 ecosystems covered — ~99% of real OSS repos on GitHub. v0.4 added Swift/iOS, Android native, React Native, Expo, Haskell, Scala, Clojure, R, Julia, Zig, OCaml, Bazel, Nx, and INFORM panels for Terraform/Ansible/Helm/Pulumi.
 
 | Ecosystem | Detection | Install | Notes |
 |---|---|---|---|
-| Node / JS / TS | ✅ Full | ✅ nvm | Next, Vite, Astro, Remix, NestJS, … |
-| Python | ✅ Full | ✅ pyenv | Django, FastAPI, Flask, … |
-| Rust | ✅ Full | ✅ rustup | |
-| Go | ✅ Full | ✅ brew/binary | |
-| Ruby | ✅ Full | ✅ rbenv | Rails, Jekyll, Sinatra |
-| PHP | ✅ Full | ✅ brew | Laravel, Symfony, WordPress |
-| Elixir | ✅ Full | ✅ asdf | Phoenix, Nerves |
-| Java / Kotlin | ✅ Full | ✅ brew/SDKMAN | Spring Boot, Quarkus, Maven, Gradle |
-| .NET / C# | ✅ Full | ✅ dotnet-install | ASP.NET, Blazor, MAUI |
-| Dart / Flutter | ✅ Full | ✅ fvm | |
-| Deno | ✅ Full | ✅ brew/install.sh | |
-| Bun (runtime) | ✅ Full | ✅ bun.sh | |
-| Swift / iOS | ✅ Full | ✅ swiftenv | SPM, CocoaPods, Carthage |
-| Android | ✅ Full | ℹ️ SDK manual | Android Studio / ANDROID_HOME |
-| React Native | ✅ Full | ✅ + CocoaPods | Xcode + Android Studio required |
-| Expo | ✅ Full | ✅ | |
-| Haskell | ✅ Full | ✅ GHCup | Stack + Cabal |
-| Scala | ✅ Full | ✅ coursier | sbt, Mill, Play, Spark |
-| Clojure | ✅ Full | ✅ brew | Leiningen, tools.deps |
-| R | ✅ Full | ✅ rig | renv, R packages, Shiny |
-| Julia | ✅ Full | ✅ juliaup | |
-| Zig | ✅ Full | ✅ zvm / brew | |
-| OCaml | ✅ Full | ✅ opam | dune |
-| Bazel | ✅ Full | ✅ bazelisk | Build layer over Python/Java/Go/Rust |
-| Nx | ✅ Full | — | Detected as monorepo layer |
-| C / C++ | ℹ️ Informed | — | CMake, Make, Meson, Autotools |
-| Nix | ℹ️ Informed | — | flake, shell, default |
-| Terraform | ℹ️ Informed | — | init / plan / apply commands |
-| Ansible | ℹ️ Informed | — | galaxy + playbook commands |
-| Helm | ℹ️ Informed | — | lint + template commands |
-| Pulumi | ℹ️ Informed | — | preview / up / destroy |
+| Node / JS / TS | Full | nvm | Next, Vite, Astro, Remix, NestJS, … |
+| Python | Full | pyenv | Django, FastAPI, Flask, … |
+| Rust | Full | rustup | |
+| Go | Full | brew/binary | |
+| Ruby | Full | rbenv | Rails, Jekyll, Sinatra |
+| PHP | Full | brew | Laravel, Symfony, WordPress |
+| Elixir | Full | asdf | Phoenix, Nerves |
+| Java / Kotlin | Full | brew/SDKMAN | Spring Boot, Quarkus, Maven, Gradle |
+| .NET / C# | Full | dotnet-install | ASP.NET, Blazor, MAUI |
+| Dart / Flutter | Full | fvm | |
+| Deno | Full | brew/install.sh | |
+| Bun (runtime) | Full | bun.sh | |
+| Swift / iOS | Full | swiftenv | SPM, CocoaPods, Carthage |
+| Android | Full | manual | Android Studio / ANDROID_HOME |
+| React Native | Full | Yes + CocoaPods | Xcode + Android Studio required |
+| Expo | Full | Yes | |
+| Haskell | Full | GHCup | Stack + Cabal |
+| Scala | Full | coursier | sbt, Mill, Play, Spark |
+| Clojure | Full | brew | Leiningen, tools.deps |
+| R | Full | rig | renv, R packages, Shiny |
+| Julia | Full | juliaup | |
+| Zig | Full | zvm / brew | |
+| OCaml | Full | opam | dune |
+| Bazel | Full | bazelisk | Build layer over Python/Java/Go/Rust |
+| Nx | Full | — | Detected as monorepo layer |
+| C / C++ | Informed | — | CMake, Make, Meson, Autotools |
+| Nix | Informed | — | flake, shell, default |
+| Terraform | Informed | — | init / plan / apply commands |
+| Ansible | Informed | — | galaxy + playbook commands |
+| Helm | Informed | — | lint + template commands |
+| Pulumi | Informed | — | preview / up / destroy |
 
-**✅ Full** = detects, installs runtime, installs deps, surfaces correct commands.
-**ℹ️ Informed** = detects, surfaces correct commands, and explains what to install manually.
+**Full** = detects, installs runtime, installs deps, surfaces correct commands.
+**Informed** = detects, surfaces correct commands, and explains what to install manually.
 
 Repos that devhelp still can't recognize exit non-zero with an `UNSUPPORTED` panel and a link to file a support request.
 
@@ -138,15 +131,11 @@ devhelp "Set me up to contribute to vercel/next.js"
 cd my-stale-project
 devhelp "get this running"
 
+# Diagnose what's detected vs. what's installed, without changing anything
+devhelp doctor
+
 # Preview what it would do — never touches your system
 devhelp --dry-run "set up this project"
-
-# Force pure-offline (no LLM, no API calls to AI providers)
-devhelp --offline "set up this project"
-
-# Opt into AI-assisted mode (experimental — see "Honest about the AI mode")
-export ANTHROPIC_API_KEY=sk-...
-devhelp --dry-run "set me up for this monorepo"
 ```
 
 ## How it works
@@ -157,7 +146,7 @@ devhelp --dry-run "set me up for this monorepo"
 └────────────┬─────────────┘
              │
         ┌────▼────┐
-        │  parse  │   extract repo name, detect intent
+        │  parse  │   extract the repo (URL or owner/repo)
         └────┬────┘
              │
         ┌────▼────┐
@@ -168,15 +157,6 @@ devhelp --dry-run "set me up for this monorepo"
         │ detect  │   read manifests, lockfiles, version files
         └────┬────┘
              │
-   ┌─────────┴──────────┐
-   │                    │
-┌──▼───┐            ┌───▼───┐
-│ rule │            │  AI   │   (only when key is set
-│ path │            │ path  │    and offline isn't forced)
-└──┬───┘            └───┬───┘
-   │                    │
-   └─────────┬──────────┘
-             │
         ┌────▼─────┐
         │ install  │   nvm/pyenv/rustup → runtime → deps
         └────┬─────┘
@@ -186,7 +166,7 @@ devhelp --dry-run "set me up for this monorepo"
         └──────────┘
 ```
 
-### What it sets up (offline mode)
+### What it sets up
 
 | Capability | Detected from | Action |
 |---|---|---|
@@ -210,10 +190,10 @@ Lockfile presence overrides whatever `packageManager` claims. The lockfile is gr
 ## Examples
 
 <details open>
-<summary><strong>Full-stack Next.js app (offline, dry-run)</strong></summary>
+<summary><strong>Full-stack Next.js app (dry-run)</strong></summary>
 
 ```
-  devhelp · offline · DRY RUN
+  devhelp · DRY RUN
   › set up this project
 
 ↓ Cloning repository                    [skipped: working in $PWD]
@@ -244,93 +224,84 @@ Lockfile presence overrides whatever `packageManager` claims. The lockfile is gr
 <summary><strong>Polyglot (Python + Rust) project</strong></summary>
 
 ```
-$ devhelp --offline --dry-run --cwd ./my-project "get this going"
+  devhelp · DRY RUN
+  › get this going
 
-→ detect python 3.12.4, rust stable
-→ pyenv installing
-→ python installing 3.12.4 via pyenv
-→ rustup installing
-→ install poetry install
-→ install cargo build
+✔ Detected: python 3.12.4, rust stable
+✔ Installed Python 3.12.4
+✔ Installed Rust stable
+✔ Installed dependencies                 poetry install
+✔ Installed dependencies                 cargo build
 
-✓ ready
-  cd ./my-project
-  pytest   # run tests
+╭─────────────────────────────────────────────────╮
+│                                                 │
+│  READY                                          │
+│                                                 │
+│    cd ./my-project                              │
+│    pytest      # tests                          │
+│                                                 │
+╰─────────────────────────────────────────────────╯
 ```
 
 </details>
 
-<details>
-<summary><strong>AI-assisted mode (opt-in, experimental)</strong></summary>
+## Security / trust model
 
-When `ANTHROPIC_API_KEY` is set, `devhelp` routes the request through a Claude tool-use loop with access to: `inspect_system`, `read_manifest`, `read_file`, `list_dir`, `run_shell`, `install_version_manager`, `install_runtime`, `write_file`.
+devhelp clones and sets up arbitrary repositories, so it's worth being explicit about what that means:
 
-It's useful for repos with non-standard build scripts that the rule-based detector doesn't understand.
+- **Running install commands runs the repo's code.** `npm install`, `cargo build`, `bundle install`, etc. execute the project's own post-install/build scripts *by design*. devhelp does not sandbox them. Only run it on repos you'd be willing to `npm install` by hand.
+- **Version strings from manifests are validated before use.** Values like `.python-version`, `rust-toolchain`, and `.tool-versions` entries are read from the (untrusted) repo and would otherwise be interpolated into shell commands. devhelp rejects any version/toolchain value containing shell metacharacters and refuses to install rather than run it — closing a shell-injection vector.
+- **Service containers are never started automatically.** `docker compose up` is surfaced as a step, never run.
+- **`--dry-run` previews everything.** Every command is printed and nothing touches your system, so you can see exactly what would run before committing to it.
 
-```bash
-export ANTHROPIC_API_KEY=sk-...
-devhelp --model claude-sonnet-4-6 --dry-run "set up this monorepo"
-```
+Found something that slips past this? Please open a security issue.
 
-**Run `--dry-run` first.** Without `--yes`, every shell command the agent runs is printed before execution. With `--yes`, the agent runs autonomously up to `--max-steps`.
-
-See [Honest about the AI mode](#honest-about-the-ai-mode) for what AI mode is *not*.
-
-</details>
-
-## Honest about the AI mode
-
-An earlier version of this README oversold AI mode. Setting the record straight:
-
-**What AI mode actually is:** a Claude tool-use loop. Useful when the rule-based detector doesn't recognize a build script, or when you want a guided walkthrough of an unfamiliar repo.
-
-**What AI mode is *not* (yet):**
-
-- Self-healing
-- Automatic recovery from arbitrary build failures
-- Smart enough to handle anything offline mode can't
-
-**Deterministic recovery lives in offline mode**, not the agent. Three rules ship today (Xcode CLT, node-gyp Python, OpenSSL/pkg-config). More to come. We'd rather ship one deterministic rule than a paragraph about "AI fixing your environment."
-
-If you don't have an API key, devhelp falls back to offline mode silently with a one-line notice. That's the supported default path and what the receipts above measure.
-
-## Flags
+## Commands & flags
 
 ```
-devhelp <request...>
+devhelp <request...>          Set up a repo (a github.com URL or owner/repo)
+devhelp doctor                Diagnose the current project without changing anything
+devhelp mcp                   Run as an MCP server over stdio (detect + doctor tools)
 
 Options:
   --cwd <dir>       Working directory (default: $PWD)
   --dry-run         Print what would happen without executing
-  --offline         Force offline playbook, no LLM calls
-  --yes             Auto-approve destructive actions in AI mode
-  --model <id>      Override the Anthropic model
-  --max-steps <n>   Agent step cap (AI mode)
+  --verbose         Show skipped steps and a detailed action summary
+  --json            Emit a machine-readable JSON result instead of the panels
+  --fix             On a recoverable failure, install the missing system dep and retry once
+  --with-services   Start detected docker compose services + run DB migrations
+  --write-lock      Write a .devhelp.lock with the resolved runtime versions
+  --verify          After setup, run tests and boot the dev server to confirm it works
+  --vscode          Generate a .vscode/launch.json for the detected stack (won't overwrite)
+  --secrets         Populate .env from a detected secrets provider (1Password / Doppler)
   -h, --help        Show help
+  -V, --version     Show version
 ```
+
+Native Windows isn't fully supported: setup commands are bash syntax, so run devhelp under **WSL** (recommended) or **Git Bash**. It detects a missing bash-compatible shell and tells you up front.
 
 ## What it won't do (yet)
 
 Honest list. PRs welcome.
 
-- Windows native (WSL only for now)
-- Auto-start Docker / docker-compose services — detected and surfaced as a step, but never run automatically (destructive)
-- Database provisioning and `prisma migrate dev` — left to the user since it can be destructive
-- Cloud secrets bootstrapping (1Password CLI, doppler) — `.env` is copied from the template but not populated
-- `.vscode/launch.json` generation
-- Local LLM backend (Ollama / llama.cpp) for AI-mode-without-cloud
-- Per-command confirm prompts in AI mode (currently relies on `--dry-run` to preview)
-- Non-manifest ecosystems — C / CMake / Lua / Elixir / etc. exit with an `UNSUPPORTED` panel rather than guessing
-- Auto-recovery from common build errors (missing Xcode CLT, libssl, node-gyp Python) — partially surfaced as `INCOMPLETE` with manual fallbacks, not yet auto-fixed
+- **Native Windows** — run under WSL or Git Bash for now (setup commands use bash syntax); devhelp detects a missing bash-compatible shell and says so up front.
+- **Auto-starting Docker services / DB migrations by default** — they're surfaced as steps and only run when you pass `--with-services` (which uses the non-destructive `prisma migrate deploy`; `prisma migrate dev` is never run).
+- **Secrets beyond 1Password / Doppler** — `--secrets` populates `.env` from those two providers; other vaults and inline secrets aren't fetched.
+- **JetBrains run-configs** — VS Code `launch.json` is generated with `--vscode`, but IntelliJ/PyCharm configs aren't yet.
+- **Auto-installing system deps for C / C++ and Nix** — detected and explained via an `INFORM` panel, but not installed. Genuinely unrecognized stacks (e.g. Lua) exit with an `UNSUPPORTED` panel rather than guessing.
+- **Unattended auto-recovery** — `--fix` retries a few failures with an obvious system-package fix (node-gyp Python, OpenSSL/pkg-config); without it, failures surface as `INCOMPLETE` with a manual hint. Xcode CLT stays hint-only (its installer is interactive).
 
 ## Roadmap
 
-- [ ] Auto-recovery rules for common install failures (node-gyp Python, missing Xcode CLT, libssl/pkg-config)
-- [ ] `.vscode/launch.json` and JetBrains run-config generation
-- [ ] Ollama backend for fully-local AI mode
-- [ ] Linux package detection (`apt`, `dnf`, `pacman`) for build-tool installs
-- [ ] Plugin API for project-specific recipes (`.devhelp.yml`)
-- [ ] Windows native support
+- [x] Auto-recovery rules for common install failures (node-gyp Python, libssl/pkg-config) — `--fix`
+- [x] Linux package detection (`apt`, `dnf`, `pacman`, `zypper`, `apk`) for system-dep installs
+- [x] Plugin API for project-specific recipes (`.devhelp.yml`)
+- [x] Post-setup verification (run tests + boot the dev server) — `--verify`
+- [x] `.vscode/launch.json` generation — `--vscode`
+- [x] Cloud secret bootstrapping (1Password, Doppler) to populate `.env` — `--secrets`
+- [x] MCP server exposing detect + doctor — `devhelp mcp`
+- [ ] JetBrains run-config generation
+- [ ] Full native Windows support (WSL / Git Bash work today; cross-platform probing + guard landed)
 
 See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
@@ -338,7 +309,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 Every developer loses hours a week to environment setup. Most of those hours go to problems with **deterministic answers** — wrong Node version, missing system lib, lockfile/manager mismatch, forgot to copy `.env.example`, forgot to `prisma generate`. There's no reason a tool can't just fix them.
 
-devhelp keeps the deterministic path fast, free, and offline. AI is opt-in, scoped, and honestly described.
+devhelp keeps that path fast, free, and fully deterministic — no LLM, no API keys, no surprises.
 
 The thing we measure ourselves on is: *did the user run our command, and did `pnpm dev` actually work afterwards?* If no, that's a failure pattern we want documented in [`stress-test/FAILURE_PATTERNS.md`](./stress-test/FAILURE_PATTERNS.md). The receipts matter more than the marketing.
 

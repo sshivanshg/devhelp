@@ -13,7 +13,7 @@
 <!-- The exact commands you ran to test this. Include `devhelp --dry-run` output for any detection or playbook change. -->
 
 ```
-$ devhelp --offline --dry-run "<request>"
+$ devhelp --dry-run "<request>"
 ...
 ```
 

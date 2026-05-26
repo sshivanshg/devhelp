@@ -6,8 +6,17 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execa } from "execa";
 import { simpleGit } from "simple-git";
+import ora from "ora";
 import { detect, isDetectionEmpty, type Detected, type PkgManager } from "./detect.js";
 import { findRecovery } from "./recovery.js";
+import {
+  detectSystemPackageManager,
+  systemInstallCommand,
+  commandExistsProbe,
+  pickShell,
+  WINDOWS_SHELL_HELP,
+  type SystemDep,
+} from "./platform.js";
 import {
   detectAvailable,
   pickNodeManager,
@@ -16,12 +25,25 @@ import {
   pythonInstallCommand,
 } from "./version-managers.js";
 import { writeRunLog, type RunLogPayload } from "./run-log.js";
+import { findUnsafeVersionField } from "./versions.js";
+import { writeDevhelpLock, checkLockDrift, LOCK_FILENAME } from "./lockfile.js";
+import { loadRecipe, type DevhelpRecipe } from "./recipe.js";
+import { verifyTests, verifyDevServer, type VerifyCheck } from "./verify.js";
+import { writeVscodeLaunch } from "./vscode.js";
+import { detectSecretsProvider, secretsCommand } from "./secrets.js";
 
 export interface OfflineOptions {
   request: string;
   cwd: string;
   dryRun: boolean;
   verbose?: boolean;
+  json?: boolean;
+  fix?: boolean;
+  writeLock?: boolean;
+  withServices?: boolean;
+  verify?: boolean;
+  vscode?: boolean;
+  secrets?: boolean;
 }
 
 interface PlaybookCtx {
@@ -29,25 +51,47 @@ interface PlaybookCtx {
   cwd: string;
   dryRun: boolean;
   verbose: boolean;
+  json: boolean;
+  fix: boolean;
+  writeLock: boolean;
+  withServices: boolean;
+  doVerify: boolean;
+  vscode: boolean;
+  secrets: boolean;
+  verifyChecks?: VerifyCheck[];
   projectDir: string;
   cloned: boolean;
   cloneSkipped: boolean;
+  // A throwaway clone made during a dry run so detection has a real repo to read;
+  // removed before returning so a dry run leaves the working dir untouched.
+  dryRunTempClone?: string;
   detected?: Detected;
   done: string[];
   warnings: string[];
   failedSteps: { name: string; error: string; recovery?: string }[];
   criticalStepFailed: boolean;
   nothingDetected: boolean;
+  // Whether <projectDir>/.env existed before the run started. Snapshotted up
+  // front so --secrets can refuse to clobber a user's pre-existing .env while
+  // still populating one that devhelp itself created from a template this run.
+  envPreexisted: boolean;
 }
 
 export async function runOffline(opts: OfflineOptions): Promise<number> {
-  printBanner(opts);
+  if (!opts.json) printBanner(opts);
 
   const ctx: PlaybookCtx = {
     request: opts.request,
     cwd: opts.cwd,
     dryRun: opts.dryRun,
     verbose: !!opts.verbose,
+    json: !!opts.json,
+    fix: !!opts.fix,
+    writeLock: !!opts.writeLock,
+    withServices: !!opts.withServices,
+    doVerify: !!opts.verify,
+    vscode: !!opts.vscode,
+    secrets: !!opts.secrets,
     projectDir: opts.cwd,
     cloned: false,
     cloneSkipped: false,
@@ -56,15 +100,51 @@ export async function runOffline(opts: OfflineOptions): Promise<number> {
     failedSteps: [],
     criticalStepFailed: false,
     nothingDetected: false,
+    envPreexisted: false,
   };
+
+  // Native-Windows guard: our install commands are bash syntax. Warn clearly
+  // up front rather than letting each step fail cryptically.
+  if (pickShell() === null) {
+    ctx.warnings.push(WINDOWS_SHELL_HELP);
+    say(ctx, chalk.yellow("  ⚠  " + WINDOWS_SHELL_HELP));
+  }
 
   // Run clone+detect outside the listr task list so we can decide what to include.
   await runCloneStep(ctx);
+  // Snapshot now, before setupEnv may create .env, so --secrets can tell a
+  // user's pre-existing .env apart from one devhelp creates during this run.
+  ctx.envPreexisted = await exists(path.join(ctx.projectDir, ".env"));
   ctx.detected = await detect(ctx.projectDir);
+
+  // Security gate: version/toolchain values come from the cloned repo's
+  // manifests and are interpolated into shell commands by the installers
+  // below. Refuse to proceed if any carries shell metacharacters.
+  const unsafe = findUnsafeVersionField(ctx.detected as unknown as Record<string, unknown>);
+  if (unsafe) {
+    throw new Error(
+      `Refusing to run: the repo's manifest sets ${unsafe.field} to ${JSON.stringify(unsafe.value)}, ` +
+        `which contains characters not allowed in a version string. This is a shell-injection risk, ` +
+        `so devhelp will not install anything for this repo.`,
+    );
+  }
+
+  // Project recipe: maintainer-declared overrides + extra steps. Applied to the
+  // detection result so the rest of the flow (panel, lock, tasks) sees them.
+  const recipe = await loadRecipe(ctx.projectDir);
+  if (recipe) applyRecipe(ctx.detected, recipe);
+
+  // If a .devhelp.lock is present, warn when detection has drifted from it.
+  for (const drift of await checkLockDrift(ctx.projectDir, ctx.detected)) {
+    ctx.warnings.push(`.devhelp.lock drift — ${drift}`);
+  }
+
   if (isDetectionEmpty(ctx.detected)) ctx.nothingDetected = true;
   // Print a one-line detection summary before the listr UI starts.
-  console.log(chalk.green("  ✔"), chalk.bold("Detected:"), describe(ctx.detected));
-  console.log();
+  if (!ctx.json) {
+    console.log(chalk.green("  ✔"), chalk.bold("Detected:"), describe(ctx.detected));
+    console.log();
+  }
   ctx.done.push(`detected ${describe(ctx.detected)}`);
 
   type T = { title: string; run: (c: PlaybookCtx, task: any) => Promise<void>; critical?: boolean };
@@ -158,20 +238,49 @@ export async function runOffline(opts: OfflineOptions): Promise<number> {
   if (d.envTemplates.length) {
     candidates.push({ title: "Setting up environment files", run: (c, task) => setupEnv(c, task) });
   }
+  if (ctx.withServices && d.dockerComposeFiles.length) {
+    candidates.push({ title: "Starting services (docker compose)", critical: true, run: (c, task) => startServices(c, task) });
+  }
   if (d.prismaSchemas.length) {
     candidates.push({ title: "Generating Prisma client", run: (c, task) => prismaGenerate(c, task) });
+  }
+  if (ctx.withServices && (d.prismaSchemas.length || d.migrationCommands.length)) {
+    candidates.push({ title: "Applying database migrations", critical: true, run: (c, task) => dbProvision(c, task) });
   }
   if (d.hasPlaywright) {
     candidates.push({ title: "Installing Playwright browsers", run: (c, task) => playwrightInstall(c, task) });
   }
+  if (ctx.secrets && d.envTemplates.length) {
+    candidates.push({ title: "Populating .env from secrets provider", run: (c, task) => populateSecrets(c, task) });
+  }
+  if (ctx.vscode && !ctx.nothingDetected) {
+    candidates.push({ title: "Generating .vscode/launch.json", run: (c, task) => generateVscode(c, task) });
+  }
+  // Maintainer recipe steps run last — after deps, env, codegen are in place.
+  for (const cmd of recipe?.postInstall ?? []) {
+    candidates.push({
+      title: `Recipe · ${truncate(cmd, 60)}`,
+      critical: true,
+      run: async (c, task) => {
+        await runShell(wrapForRuntime(cmd, c.detected!), c.projectDir, c, task);
+        task.title = `Recipe · ${cmd}`;
+        c.done.push(`recipe: ${cmd}`);
+      },
+    });
+  }
 
-  const listr = new Listr<PlaybookCtx>(
-    candidates.map((t) => ({
-      title: t.title,
-      task: t.critical ? critical(t.run) : t.run,
-    })),
-    { concurrent: false, exitOnError: false },
-  );
+  const tasks = candidates.map((t) => ({
+    title: t.title,
+    task: t.critical ? critical(t.run) : t.run,
+  }));
+  const listr = new Listr<PlaybookCtx>(tasks, {
+    concurrent: false,
+    exitOnError: false,
+    // Silent renderer in --json mode so nothing but the JSON reaches stdout.
+    // Pinning only the Ctx generic narrows `renderer` to the default class, so
+    // assert the (valid at runtime) "silent" value past the type.
+    renderer: (ctx.json ? "silent" : "default") as "default",
+  });
 
   try {
     await listr.run(ctx);
@@ -179,14 +288,229 @@ export async function runOffline(opts: OfflineOptions): Promise<number> {
     /* errors already captured */
   }
 
+  // Reproducibility artifact: pin the resolved versions, unless detection found
+  // nothing worth pinning. In a dry run we only say what we'd write.
+  if (ctx.writeLock && ctx.detected && !ctx.nothingDetected) {
+    if (ctx.dryRun) {
+      say(ctx, chalk.dim(`  ↪ [dry-run] would write ${LOCK_FILENAME}`));
+    } else {
+      const lockPath = await writeDevhelpLock(ctx.projectDir, ctx.detected);
+      if (lockPath) {
+        ctx.done.push(`wrote ${LOCK_FILENAME}`);
+        say(ctx, chalk.green("  ✔"), `Wrote ${prettyPath(lockPath)}`);
+      }
+    }
+  }
+
   const status = computeStatus(ctx);
-  const logPath = await writeRunLog(buildRunLogPayload(ctx, status));
+
+  // Verification only makes sense on a setup that actually succeeded.
+  if (ctx.doVerify && status === "READY" && !ctx.dryRun) {
+    ctx.verifyChecks = await runVerification(ctx);
+  }
+
+  // A dry run leaves nothing behind: drop the throwaway clone we read from.
+  if (ctx.dryRunTempClone) {
+    await fs.rm(ctx.dryRunTempClone, { recursive: true, force: true });
+  }
+
+  const payload = buildRunLogPayload(ctx, status);
+  if (ctx.verifyChecks) payload.verify = ctx.verifyChecks;
+  const logPath = await writeRunLog(payload);
+
+  const verifyFailed = (ctx.verifyChecks ?? []).some((c) => !c.ok);
+
+  if (ctx.json) {
+    console.log(JSON.stringify({ ...payload, logPath }, null, 2));
+    if (status === "READY" || status === "INFORM") return verifyFailed ? 1 : 0;
+    return 1;
+  }
+
   const exitCode = printSummary(ctx);
   if (logPath) {
     console.log(chalk.dim(`  Full log: ${prettyPath(logPath)}`));
     console.log();
   }
-  return exitCode;
+  // A passed setup whose verification failed is still a non-zero outcome.
+  return exitCode === 0 && verifyFailed ? 1 : exitCode;
+}
+
+/* -------------------------------------------------------------------------- */
+/* doctor — read-only diagnosis of an existing checkout                        */
+/* -------------------------------------------------------------------------- */
+
+export interface DoctorOptions {
+  cwd: string;
+  json?: boolean;
+}
+
+interface ToolCheck {
+  tool: string;
+  want?: string;
+  have: string | null;
+  status: "ok" | "missing" | "mismatch";
+}
+
+function parseVer(s: string): number[] | null {
+  const m = s.match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!m) return null;
+  return [m[1], m[2], m[3]].filter((x) => x !== undefined).map(Number);
+}
+
+/**
+ * Compare what the repo wants against what's installed, at the granularity of
+ * the wanted spec (want "20" → compare major; "3.13" → compare major.minor).
+ * A leading `>=`/`>` marks a floor (engines ">=18"): any newer runtime satisfies
+ * it, so only a strictly-lower installed version is a mismatch. Without an
+ * operator the spec is an exact pin. Non-numeric specs (lts/*, stable, latest)
+ * can't be compared, so "present" counts as ok — we don't cry wolf.
+ */
+export function versionStatus(
+  want: string | undefined,
+  have: string | null,
+): "ok" | "missing" | "mismatch" {
+  if (!have) return "missing";
+  if (!want) return "ok";
+  const floor = /^\s*>=?/.test(want);
+  const spec = want.replace(/^\s*>=?\s*/, "").trim();
+  if (!/^\d/.test(spec)) return "ok";
+  const w = parseVer(spec);
+  const h = parseVer(have);
+  if (!w || !h) return "ok";
+  for (let i = 0; i < w.length; i++) {
+    if (h[i] === undefined) return "ok"; // have is coarser than want — can't disprove
+    if (floor) {
+      if (h[i] > w[i]) return "ok"; // strictly above the floor at this level
+      if (h[i] < w[i]) return "mismatch";
+      // equal → check the next, finer component
+    } else if (h[i] !== w[i]) {
+      return "mismatch";
+    }
+  }
+  return "ok";
+}
+
+/** Probe table: which CLI proves a detected runtime is installed. */
+function doctorProbes(d: Detected): { tool: string; want?: string; bin: string; args: string[] }[] {
+  const p: { tool: string; want?: string; bin: string; args: string[] }[] = [];
+  if (d.nodeVersion && !d.nodeIsToolingOnly && !d.bunIsRuntime)
+    p.push({
+      tool: "Node",
+      want: d.nodeVersionIsFloor ? `>=${d.nodeVersion}` : d.nodeVersion,
+      bin: "node",
+      args: ["--version"],
+    });
+  if (d.bunIsRuntime) p.push({ tool: "Bun", want: d.bunVersion, bin: "bun", args: ["--version"] });
+  if (d.pythonVersion) p.push({ tool: "Python", want: d.pythonVersion, bin: "python3", args: ["--version"] });
+  if (d.rustToolchain && !d.rustIsOptional) p.push({ tool: "Rust", want: d.rustToolchain, bin: "rustc", args: ["--version"] });
+  if (d.goVersion) p.push({ tool: "Go", want: d.goVersion, bin: "go", args: ["version"] });
+  if (d.rubyVersion) p.push({ tool: "Ruby", want: d.rubyVersion, bin: "ruby", args: ["--version"] });
+  if (d.phpVersion) p.push({ tool: "PHP", want: d.phpVersion, bin: "php", args: ["--version"] });
+  if (d.javaVersion) p.push({ tool: "Java", want: d.javaVersion, bin: "java", args: ["-version"] });
+  if (d.dotnetVersion) p.push({ tool: ".NET", want: d.dotnetVersion, bin: "dotnet", args: ["--version"] });
+  if (d.denoVersion) p.push({ tool: "Deno", want: d.denoVersion, bin: "deno", args: ["--version"] });
+  if (d.pkgManager && !d.nodeIsToolingOnly)
+    p.push({ tool: d.pkgManager, bin: d.pkgManager, args: ["--version"] });
+  return p;
+}
+
+async function diagnose(d: Detected): Promise<ToolCheck[]> {
+  const checks = await Promise.all(
+    doctorProbes(d).map(async (probe) => {
+      const have = await tryVersion(probe.bin, probe.args);
+      return { tool: probe.tool, want: probe.want, have, status: versionStatus(probe.want, have) };
+    }),
+  );
+  return checks;
+}
+
+export interface DoctorReport {
+  projectDir: string;
+  summary: string;
+  unsupported: boolean;
+  checks: ToolCheck[];
+  missing: string[];
+  mismatched: string[];
+  services: string[];
+  envTemplates: string[];
+  prismaSchemas: string[];
+}
+
+/** Pure diagnosis (no printing) — reused by `doctor` output and the MCP server. */
+export async function diagnoseProject(cwd: string): Promise<DoctorReport> {
+  const d = await detect(cwd);
+  const empty = isDetectionEmpty(d);
+  const checks = empty ? [] : await diagnose(d);
+  return {
+    projectDir: cwd,
+    summary: describe(d),
+    unsupported: empty,
+    checks,
+    missing: checks.filter((c) => c.status === "missing").map((c) => c.tool),
+    mismatched: checks.filter((c) => c.status === "mismatch").map((c) => c.tool),
+    services: d.dockerComposeFiles,
+    envTemplates: d.envTemplates,
+    prismaSchemas: d.prismaSchemas,
+  };
+}
+
+export async function runDoctor(opts: DoctorOptions): Promise<number> {
+  const report = await diagnoseProject(opts.cwd);
+  const { unsupported: empty, checks, missing, mismatched } = report;
+  const problems = missing.length + mismatched.length;
+  // detect again only for the unrecognized-manifest hint in the empty case.
+  const d = await detect(opts.cwd);
+
+  if (opts.json) {
+    console.log(JSON.stringify(report, null, 2));
+    return empty || problems ? 1 : 0;
+  }
+
+  console.log();
+  console.log(chalk.cyan.bold("  devhelp doctor"), chalk.dim(`· ${prettyPath(opts.cwd)}`));
+  console.log();
+
+  if (empty) {
+    console.log(chalk.yellow("  No recognized stack here."));
+    if (d.unrecognizedManifests.length)
+      console.log(chalk.dim(`  Found: ${d.unrecognizedManifests.join(", ")}`));
+    console.log();
+    return 1;
+  }
+
+  console.log(chalk.bold("  Detected:"), describe(d));
+  console.log();
+  console.log(chalk.bold("  Toolchain:"));
+  for (const c of checks) {
+    const want = c.want ? chalk.dim(` (wants ${c.want})`) : "";
+    if (c.status === "ok") console.log(chalk.green(`  ✔ ${c.tool}`) + want + chalk.dim(` — ${c.have}`));
+    else if (c.status === "mismatch")
+      console.log(chalk.yellow(`  ⚠ ${c.tool}`) + want + chalk.dim(` — found ${c.have}`));
+    else console.log(chalk.red(`  ✗ ${c.tool}`) + want + chalk.dim(" — not on PATH"));
+  }
+
+  const notes: string[] = [];
+  if (d.dockerComposeFiles.length)
+    notes.push(`services: docker compose up -d  (${d.dockerComposeFiles.slice(0, 2).join(", ")})`);
+  if (d.envTemplates.length) notes.push(`env: copy ${d.envTemplates.length} template(s) → .env`);
+  if (d.prismaSchemas.length) notes.push(`prisma: ${d.prismaSchemas.length} schema(s) to generate`);
+  if (notes.length) {
+    console.log();
+    console.log(chalk.bold("  Setup needs:"));
+    for (const n of notes) console.log(chalk.dim(`  • ${n}`));
+  }
+
+  console.log();
+  if (problems) {
+    const bits: string[] = [];
+    if (missing.length) bits.push(`${missing.length} missing`);
+    if (mismatched.length) bits.push(`${mismatched.length} version mismatch`);
+    console.log(chalk.yellow(`  ${bits.join(", ")} — run: `) + chalk.cyan("devhelp \"set up this project\""));
+  } else {
+    console.log(chalk.green("  Toolchain looks complete."));
+  }
+  console.log();
+  return problems ? 1 : 0;
 }
 
 function computeStatus(ctx: PlaybookCtx): RunLogPayload["status"] {
@@ -202,7 +526,6 @@ function buildRunLogPayload(ctx: PlaybookCtx, status: RunLogPayload["status"]): 
     request: ctx.request,
     cwd: ctx.cwd,
     projectDir: ctx.projectDir,
-    mode: "offline",
     dryRun: ctx.dryRun,
     status,
     detected: ctx.detected as unknown as Record<string, unknown> | undefined,
@@ -225,21 +548,62 @@ function critical(
   fn: (c: PlaybookCtx, task: any) => Promise<void>,
 ): (c: PlaybookCtx, task: any) => Promise<void> {
   return async (c, task) => {
+    const stepName = typeof task.title === "string" ? task.title : "step";
     try {
       await fn(c, task);
     } catch (e) {
-      const err = e instanceof Error ? e.message : String(e);
-      const stepName = typeof task.title === "string" ? task.title : "step";
+      let lastError = e;
+      const match = findRecovery(e instanceof Error ? e.message : String(e));
+
+      // Auto-fix + retry once: only when --fix is on, we're not in a dry run,
+      // and the matched rule maps to a known system-level dependency.
+      if (c.fix && !c.dryRun && match?.systemDeps?.length) {
+        const fixed = await attemptAutoFix(c, task, match.systemDeps);
+        if (fixed) {
+          try {
+            await fn(c, task);
+            return; // retry succeeded — step is done, no failure recorded
+          } catch (e2) {
+            lastError = e2;
+          }
+        }
+      }
+
+      const err = lastError instanceof Error ? lastError.message : String(lastError);
       c.criticalStepFailed = true;
-      const match = findRecovery(err);
+      const finalMatch = findRecovery(err);
       c.failedSteps.push({
         name: stepName,
         error: firstLine(err),
-        recovery: match?.remediation,
+        recovery: finalMatch?.remediation,
       });
-      throw e;
+      throw lastError;
     }
   };
+}
+
+/**
+ * Install the system deps a recovery rule points at, using the detected OS
+ * package manager. Returns true only if the install command actually ran and
+ * succeeded, so the caller knows whether a retry is worth attempting.
+ */
+async function attemptAutoFix(
+  ctx: PlaybookCtx,
+  task: any,
+  deps: SystemDep[],
+): Promise<boolean> {
+  const mgr = await detectSystemPackageManager();
+  if (!mgr) return false;
+  const cmd = systemInstallCommand(mgr, deps);
+  if (!cmd) return false;
+  task.title = `Auto-fix: ${truncate(cmd, 70)}`;
+  try {
+    await runShell(cmd, ctx.projectDir, ctx, task);
+    ctx.done.push(`auto-fix: ${cmd}`);
+    return true;
+  } catch {
+    return false; // fix itself failed — fall back to the hint
+  }
 }
 
 function firstLine(s: string): string {
@@ -250,6 +614,52 @@ function firstLine(s: string): string {
 /* Tasks                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/** console.log gated on non-JSON mode, so --json output stays clean. */
+function say(ctx: PlaybookCtx, ...args: unknown[]): void {
+  if (!ctx.json) console.log(...args);
+}
+
+/** Merge a maintainer recipe's command overrides into the detection result. */
+function applyRecipe(d: Detected, recipe: DevhelpRecipe): void {
+  if (recipe.dev) d.devCommand = recipe.dev;
+  if (recipe.test) d.testCommand = recipe.test;
+  if (recipe.build) d.buildCommand = recipe.build;
+}
+
+/** Run tests + dev-server probe to prove the setup actually works. */
+async function runVerification(ctx: PlaybookCtx): Promise<VerifyCheck[]> {
+  const d = ctx.detected!;
+  const checks: VerifyCheck[] = [];
+  say(ctx, chalk.dim("  ↪ Verifying setup…"));
+
+  if (d.testCommand) {
+    const c = await verifyTests(
+      wrapForRuntime(d.testCommand, d),
+      ctx.projectDir,
+      `tests · ${d.testCommand}`,
+    );
+    say(ctx, verifyLine(c));
+    checks.push(c);
+  }
+  if (!d.isLibrary && d.devCommand && d.devUrl) {
+    const c = await verifyDevServer(
+      wrapForRuntime(d.devCommand, d),
+      ctx.projectDir,
+      d.devUrl,
+      `dev server · ${d.devUrl}`,
+    );
+    say(ctx, verifyLine(c));
+    checks.push(c);
+  }
+  return checks;
+}
+
+function verifyLine(c: VerifyCheck): string {
+  return c.ok
+    ? chalk.green(`  ✔ ${c.name} — ${c.detail}`)
+    : chalk.red(`  ✗ ${c.name} — ${c.detail}`);
+}
+
 async function runCloneStep(ctx: PlaybookCtx): Promise<void> {
   const repo = extractRepo(ctx.request);
   if (!repo) return;
@@ -259,27 +669,65 @@ async function runCloneStep(ctx: PlaybookCtx): Promise<void> {
     if (archived) {
       const msg = `${repo.owner}/${repo.repo} is archived on GitHub — read-only, no PRs accepted`;
       ctx.warnings.push(msg);
-      console.log(chalk.yellow("  ⚠  Heads up: ") + msg);
+      say(ctx, chalk.yellow("  ⚠  Heads up: ") + msg);
     }
   }
   const dest = path.resolve(ctx.cwd, repo.name);
   if (await exists(dest)) {
     ctx.projectDir = dest;
     ctx.cloneSkipped = true;
-    console.log(chalk.green("  ✔"), chalk.bold("Repo present:"), prettyPath(dest));
+    say(ctx, chalk.green("  ✔"), chalk.bold("Repo present:"), prettyPath(dest));
     return;
   }
   if (ctx.dryRun) {
-    console.log(chalk.dim(`  ↪ [dry-run] would clone ${repo.url} → ${prettyPath(dest)}`));
+    // Clone shallowly so detection sees the real manifests and the plan is
+    // accurate; the clone is removed before runOffline returns. Cloning is the
+    // only read-only-from-the-remote way to know what we'd do.
+    try {
+      await cloneWithProgress(ctx, repo.url, dest, chalk.dim(`[dry-run] cloning ${repo.url} to inspect`), ["--depth", "1"]);
+      ctx.dryRunTempClone = dest;
+    } catch {
+      say(ctx, chalk.dim(`  ↪ [dry-run] clone failed — plan limited to what's knowable offline`));
+    }
     ctx.projectDir = dest;
     return;
   }
-  console.log(chalk.cyan(`  ↪ Cloning ${repo.url}`));
-  await simpleGit({ baseDir: ctx.cwd }).clone(repo.url, dest);
+  await cloneWithProgress(ctx, repo.url, dest, chalk.cyan(`Cloning ${repo.url}`));
   ctx.projectDir = dest;
   ctx.cloned = true;
   ctx.done.push(`cloned ${repo.url}`);
-  console.log(chalk.green("  ✔"), `Cloned to ${prettyPath(dest)}`);
+  say(ctx, chalk.green("  ✔"), `Cloned to ${prettyPath(dest)}`);
+}
+
+/**
+ * git clone with a live spinner driven by git's own progress output, so a long
+ * clone isn't a frozen-looking pause. In --json mode or when stderr isn't a TTY
+ * (CI, piped output) it falls back to a single log line so output stays clean
+ * and scriptable. Resolves/rejects exactly like simpleGit().clone().
+ */
+async function cloneWithProgress(
+  ctx: PlaybookCtx,
+  url: string,
+  dest: string,
+  label: string,
+  cloneArgs: string[] = [],
+): Promise<void> {
+  const spinner =
+    !ctx.json && process.stderr.isTTY
+      ? ora({ text: label, indent: 2, spinner: "dots" }).start()
+      : null;
+  if (!spinner) say(ctx, "  ↪ " + label);
+  const git = simpleGit({
+    baseDir: ctx.cwd,
+    progress({ stage, progress }) {
+      if (spinner) spinner.text = `${label} · ${stage} ${progress}%`;
+    },
+  });
+  try {
+    await git.clone(url, dest, cloneArgs);
+  } finally {
+    spinner?.stop();
+  }
 }
 
 async function checkGitHubArchived(owner: string, repo: string): Promise<boolean> {
@@ -317,8 +765,10 @@ async function installNode(version: string, ctx: PlaybookCtx, task: any): Promis
     );
   }
   task.title = `Installing Node ${version}`;
+  // Quote the version: tokens like "lts/*" are glob-expanded by zsh (the macOS
+  // default), which errors with "no matches found" before nvm ever sees them.
   await runShell(
-    nvmWrap(`nvm install ${version} && nvm use ${version}`),
+    nvmWrap(`nvm install "${version}" && nvm use "${version}"`),
     ctx.projectDir,
     ctx,
     task,
@@ -425,6 +875,44 @@ async function setupEnv(ctx: PlaybookCtx, task: any): Promise<void> {
   }
 }
 
+/** Build the compose "up" command. `--wait` is Compose v2 only (v1 lacks it). */
+export function composeUpCommand(base: string, file: string, wait: boolean): string {
+  return `${base} -f ${file} up -d${wait ? " --wait" : ""}`;
+}
+
+/**
+ * Resolve the available compose CLI: prefer v2 (`docker compose`, supports
+ * --wait), fall back to legacy v1 (`docker-compose`, no --wait). null = neither.
+ */
+async function detectCompose(): Promise<{ base: string; wait: boolean } | null> {
+  if (await which("docker")) {
+    const v2 = await execa("docker", ["compose", "version"], { reject: false, timeout: 4000 });
+    if (v2.exitCode === 0) return { base: "docker compose", wait: true };
+  }
+  if (await which("docker-compose")) return { base: "docker-compose", wait: false };
+  return null;
+}
+
+async function startServices(ctx: PlaybookCtx, task: any): Promise<void> {
+  const files = ctx.detected!.dockerComposeFiles;
+  // Skip the probe in dry-run; just display the v2 form.
+  const compose = ctx.dryRun ? { base: "docker compose", wait: true } : await detectCompose();
+  if (!compose) {
+    // Can't start what isn't installed — surface it, don't fail the whole run.
+    ctx.warnings.push("Docker not found — install Docker to start services, then `docker compose up -d`");
+    task.title = "Services — Docker not installed (skipped)";
+    return;
+  }
+  // One `up` per compose file. --wait (v2) blocks until containers are healthy
+  // so a following migration step finds the DB ready.
+  for (const f of files) {
+    task.title = `Starting services (${f})`;
+    await runShell(composeUpCommand(compose.base, f, compose.wait), ctx.projectDir, ctx, task);
+  }
+  task.title = `Services started (${files.length})`;
+  ctx.done.push(`${compose.base} up × ${files.length}`);
+}
+
 async function prismaGenerate(ctx: PlaybookCtx, task: any): Promise<void> {
   const pm = ctx.detected!.pkgManager ?? "npm";
   for (const schema of ctx.detected!.prismaSchemas) {
@@ -434,6 +922,82 @@ async function prismaGenerate(ctx: PlaybookCtx, task: any): Promise<void> {
   }
   task.title = `Prisma client generated (${ctx.detected!.prismaSchemas.length})`;
   ctx.done.push(`prisma generate × ${ctx.detected!.prismaSchemas.length}`);
+}
+
+async function dbProvision(ctx: PlaybookCtx, task: any): Promise<void> {
+  const d = ctx.detected!;
+  const pm = d.pkgManager ?? "npm";
+  // `migrate deploy` applies committed migrations only — it never resets or
+  // generates new ones, so it's safe to run unattended (unlike `migrate dev`).
+  for (const schema of d.prismaSchemas) {
+    task.title = `prisma migrate deploy (${schema})`;
+    await runShell(
+      wrapForRuntime(`${pmExec(pm)} prisma migrate deploy --schema ${schema}`, d),
+      ctx.projectDir,
+      ctx,
+      task,
+    );
+  }
+  if (d.prismaSeedConfigured) {
+    task.title = "prisma db seed";
+    await runShell(wrapForRuntime(`${pmExec(pm)} prisma db seed`, d), ctx.projectDir, ctx, task);
+  }
+  if (d.prismaSchemas.length) {
+    ctx.done.push("prisma migrate deploy" + (d.prismaSeedConfigured ? " + seed" : ""));
+  }
+  // Non-Prisma ORMs / frameworks (Drizzle, Django, Rails).
+  for (const cmd of d.migrationCommands) {
+    task.title = truncate(cmd, 60);
+    await runShell(wrapForRuntime(cmd, d), ctx.projectDir, ctx, task);
+    ctx.done.push(cmd);
+  }
+  task.title = "Database provisioned";
+}
+
+async function generateVscode(ctx: PlaybookCtx, task: any): Promise<void> {
+  if (ctx.dryRun) {
+    task.output = "[dry-run] would write .vscode/launch.json";
+    task.title = "Would generate .vscode/launch.json";
+    return;
+  }
+  const result = await writeVscodeLaunch(ctx.projectDir, ctx.detected!);
+  if (result === "exists") {
+    task.title = ".vscode/launch.json already present (left alone)";
+  } else if (result) {
+    task.title = "Wrote .vscode/launch.json";
+    ctx.done.push("wrote .vscode/launch.json");
+  } else {
+    task.title = ".vscode/launch.json — nothing to generate";
+  }
+}
+
+async function populateSecrets(ctx: PlaybookCtx, task: any): Promise<void> {
+  const provider = await detectSecretsProvider(ctx.projectDir, ctx.detected!.envTemplates);
+  if (!provider) {
+    ctx.warnings.push("--secrets: no provider detected (no op:// refs or doppler config)");
+    task.title = "Secrets — no provider detected";
+    return;
+  }
+  if (!ctx.dryRun && !(await which(provider.cli))) {
+    ctx.warnings.push(`--secrets: ${provider.cli} not installed — install it, then re-run`);
+    task.title = `Secrets — ${provider.cli} not installed`;
+    return;
+  }
+  // Never clobber a .env the user already had. We still populate a .env that
+  // devhelp created from a template this run (the 1Password op-inject case),
+  // since that one only holds placeholders — envPreexisted distinguishes them.
+  if (ctx.envPreexisted) {
+    ctx.warnings.push(
+      `--secrets: .env already present — not overwritten. Remove it and re-run to populate from ${provider.name}.`,
+    );
+    task.title = ".env present — not overwritten";
+    return;
+  }
+  const cmd = secretsCommand(provider);
+  task.title = `Populating .env via ${provider.name}`;
+  await runShell(cmd, ctx.projectDir, ctx, task);
+  task.title = `Populated .env via ${provider.name}`;
+  ctx.done.push(`secrets via ${provider.name}`);
 }
 
 async function playwrightInstall(ctx: PlaybookCtx, task: any): Promise<void> {
@@ -459,7 +1023,9 @@ async function runShell(
     task.output = `[dry-run] ${command}`;
     return;
   }
-  const shell = process.env.SHELL || "/bin/bash";
+  // Falls back to /bin/bash on POSIX; on native Windows without a bash shell
+  // the up-front guard has already warned, but try "bash" (git-bash) anyway.
+  const shell = pickShell() ?? "bash";
   const sub = execa(shell, ["-lc", command], {
     cwd,
     timeout: 10 * 60 * 1000,
@@ -481,10 +1047,11 @@ async function runShell(
   if (successMsg) ctx.done.push(successMsg);
 }
 
-function wrapForRuntime(command: string, d: Detected): string {
+export function wrapForRuntime(command: string, d: Detected): string {
   if (d.nodeVersion && /^(npm|pnpm|yarn|bun|npx)\b/.test(command)) {
     return nvmWrap(
-      `nvm use ${d.nodeVersion} >/dev/null 2>&1 || nvm use default >/dev/null 2>&1; ${command}`,
+      // Quoted so zsh doesn't glob-expand version tokens like "lts/*".
+      `nvm use "${d.nodeVersion}" >/dev/null 2>&1 || nvm use default >/dev/null 2>&1; ${command}`,
     );
   }
   return command;
@@ -513,8 +1080,11 @@ function pmExec(pm: PkgManager): string {
 
 async function which(cmd: string): Promise<string | null> {
   try {
-    const r = await execa("which", [cmd]);
-    return r.stdout.trim() || null;
+    const probe = commandExistsProbe(cmd);
+    const r = await execa(probe.cmd, probe.args, { reject: false, shell: probe.shell });
+    if (r.exitCode !== 0) return null;
+    // `where` can return multiple lines on Windows — take the first.
+    return r.stdout.split(/\r?\n/)[0].trim() || null;
   } catch {
     return null;
   }
@@ -585,7 +1155,7 @@ function guessRepoName(url: string): string {
   return m?.[1] ?? "repo";
 }
 
-function describe(d: Detected): string {
+export function describe(d: Detected): string {
   const bits: string[] = [];
   if (d.framework) bits.push(d.framework.name);
   if (d.isLibrary) bits.push("library");
@@ -645,7 +1215,7 @@ function printBanner(opts: OfflineOptions): void {
   console.log();
   console.log(
     chalk.cyan.bold("  devhelp"),
-    chalk.dim(`· offline${opts.dryRun ? " · DRY RUN" : ""}`),
+    opts.dryRun ? chalk.dim("· DRY RUN") : "",
   );
   console.log(chalk.dim("  ›"), opts.request);
   console.log();
@@ -714,7 +1284,7 @@ function printUnsupportedPanel(ctx: PlaybookCtx): void {
   }
   lines.push("");
   lines.push(chalk.dim("  Request support →"));
-  lines.push(chalk.dim("  github.com/shivanshgupta/devhelp/issues/new"));
+  lines.push(chalk.dim("  github.com/sshivanshg/devhelp/issues/new"));
   console.log();
   console.log(
     boxen(lines.join("\n"), {
@@ -806,11 +1376,17 @@ function printReadyPanel(ctx: PlaybookCtx): void {
 
   if (d.dockerComposeFiles.length) {
     lines.push("");
-    lines.push(chalk.dim("  Before starting:"));
-    lines.push(chalk.cyan("  docker compose up -d") + chalk.dim("       # starts services (Postgres, Redis, etc.)"));
-    lines.push(chalk.dim(`  (found: ${d.dockerComposeFiles.slice(0, 3).join(", ")}${d.dockerComposeFiles.length > 3 ? "…" : ""})`));
-    if (d.envHasLocalDb) {
-      lines.push(chalk.yellow("  ! DATABASE_URL points at localhost — make sure the service is running"));
+    if (ctx.withServices) {
+      lines.push(chalk.dim("  Services (already started via docker compose):"));
+      lines.push(chalk.dim(`  (${d.dockerComposeFiles.slice(0, 3).join(", ")}${d.dockerComposeFiles.length > 3 ? "…" : ""})`));
+      lines.push(chalk.dim("  Stop with: docker compose down"));
+    } else {
+      lines.push(chalk.dim("  Before starting:"));
+      lines.push(chalk.cyan("  docker compose up -d") + chalk.dim("       # starts services (Postgres, Redis, etc.)"));
+      lines.push(chalk.dim(`  (found: ${d.dockerComposeFiles.slice(0, 3).join(", ")}${d.dockerComposeFiles.length > 3 ? "…" : ""})`));
+      if (d.envHasLocalDb) {
+        lines.push(chalk.yellow("  ! DATABASE_URL points at localhost — make sure the service is running"));
+      }
     }
   }
 
@@ -830,6 +1406,18 @@ function printReadyPanel(ctx: PlaybookCtx): void {
     for (const h of hints) lines.push(chalk.dim(`  ${h}`));
   }
 
+  if (ctx.verifyChecks?.length) {
+    lines.push("");
+    lines.push(chalk.bold("  Verified:"));
+    for (const c of ctx.verifyChecks) {
+      lines.push(
+        c.ok
+          ? chalk.green(`  ✔ ${c.name} — ${c.detail}`)
+          : chalk.red(`  ✗ ${c.name} — ${c.detail}`),
+      );
+    }
+  }
+
   if (ctx.warnings.length) {
     lines.push("");
     for (const w of ctx.warnings) lines.push(chalk.yellow(`  ! ${w}`));
@@ -840,7 +1428,7 @@ function printReadyPanel(ctx: PlaybookCtx): void {
     boxen(lines.join("\n"), {
       padding: { top: 1, bottom: 1, left: 2, right: 2 },
       borderStyle: "round",
-      borderColor: "green",
+      borderColor: (ctx.verifyChecks ?? []).some((c) => !c.ok) ? "yellow" : "green",
       title: d.framework?.name ? chalk.bold(d.framework.name) : undefined,
       titleAlignment: "center",
     }),

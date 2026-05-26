@@ -47,16 +47,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: mode
-    attributes:
-      label: Mode
-      options:
-        - Offline
-        - AI-assisted
-    validations:
-      required: true
-
   - type: textarea
     id: extra
     attributes:

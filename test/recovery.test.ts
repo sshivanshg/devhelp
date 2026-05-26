@@ -44,4 +44,16 @@ describe("recovery rules", () => {
       expect(r.id).toMatch(/^[a-z][a-z0-9-]+$/);
     }
   });
+
+  it("auto-fixable rules surface their system deps", () => {
+    const gyp = findRecovery("gyp ERR! find Python");
+    expect(gyp?.systemDeps).toContain("python3");
+    const ssl = findRecovery("openssl/ssl.h: No such file or directory");
+    expect(ssl?.systemDeps).toEqual(expect.arrayContaining(["openssl-dev", "pkg-config"]));
+  });
+
+  it("hint-only rules (xcode CLT) have no system deps", () => {
+    const xc = findRecovery("xcrun: error: invalid active developer path");
+    expect(xc?.systemDeps).toBeUndefined();
+  });
 });

@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { normalizeNodeVersion } from "./versions.js";
+import { normalizeNodeVersion, isFloorSpec } from "./versions.js";
 import {
   tryRead,
   exists,
@@ -39,6 +39,9 @@ export interface Detected {
 
   // Runtimes
   nodeVersion?: string;
+  // The wanted Node version is a lower bound (engines ">=18"), not an exact pin.
+  // doctor compares it as a floor so a newer installed runtime isn't a mismatch.
+  nodeVersionIsFloor?: boolean;
   pythonVersion?: string;
   rustToolchain?: string;
   goVersion?: string;
@@ -61,6 +64,7 @@ export interface Detected {
   // Post-install work
   envTemplates: string[]; // relative paths to .env.example etc.
   prismaSchemas: string[]; // relative paths to prisma schemas
+  prismaSeedConfigured: boolean; // package.json declares "prisma": { "seed": ... }
   hasPlaywright: boolean;
   hasHusky: boolean;
   hasSubmodules: boolean;
@@ -70,6 +74,10 @@ export interface Detected {
 
   // Final install commands (in order)
   installCommands: string[];
+
+  // DB migration commands run under --with-services (non-Prisma ORMs/frameworks:
+  // Drizzle, Django, Rails). Prisma is handled separately via prismaSchemas.
+  migrationCommands: string[];
 
   // Hints for the user
   devCommand?: string;
@@ -229,12 +237,14 @@ export async function detect(dir: string): Promise<Detected> {
     projectDir: dir,
     envTemplates: [],
     prismaSchemas: [],
+    prismaSeedConfigured: false,
     hasPlaywright: false,
     hasHusky: false,
     hasSubmodules: false,
     installCommands: [],
     nodeIsToolingOnly: false,
     isLibrary: false,
+    migrationCommands: [],
     rustIsOptional: false,
     goNeedsManualInstall: false,
     dockerComposeFiles: [],
@@ -359,12 +369,13 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
     !!pkg.bin ||
     hasAppScript;
 
-  out.nodeVersion =
-    cleanNode(pkg.volta?.node) ??
-    cleanNode(nvmrc) ??
-    cleanNode(nodeVersionFile) ??
-    cleanNode(pkg.engines?.node) ??
-    (isNodeProject ? "lts/*" : undefined);
+  // Resolution order: volta pin → .nvmrc → .node-version → engines.node. Track
+  // which raw spec won so doctor can tell a floor (engines ">=18") from a pin.
+  const nodeSpec = [pkg.volta?.node, nvmrc, nodeVersionFile, pkg.engines?.node].find(
+    (s) => cleanNode(s) !== undefined,
+  );
+  out.nodeVersion = cleanNode(nodeSpec) ?? (isNodeProject ? "lts/*" : undefined);
+  out.nodeVersionIsFloor = isFloorSpec(nodeSpec);
   out.pkgManager = pickPackageManager(pkg, lockfile);
   out.nodeIsToolingOnly = !isNodeProject;
 
@@ -397,6 +408,16 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
 
   out.hasPlaywright = !!(deps["@playwright/test"] || deps["playwright"]);
   out.hasHusky = !!deps["husky"];
+
+  // Drizzle: apply migrations under --with-services. Needs a drizzle config so
+  // we don't fire on a transitive drizzle-orm dependency.
+  const hasDrizzle = !!(deps["drizzle-orm"] || deps["drizzle-kit"]);
+  if (
+    hasDrizzle &&
+    (await fileExistsAny(dir, ["drizzle.config.ts", "drizzle.config.js", "drizzle.config.mjs"]))
+  ) {
+    out.migrationCommands.push("npx drizzle-kit migrate");
+  }
 
   if (scripts.dev) out.devCommand = `${out.pkgManager} run dev`;
   else if (scripts.start) out.devCommand = `${out.pkgManager} start`;
@@ -581,6 +602,18 @@ async function detectPython(dir: string, out: Detected): Promise<void> {
       out.framework = { name: "Flask", defaultUrl: "http://localhost:5000" };
     if (out.framework && !out.devUrl) out.devUrl = out.framework.defaultUrl;
   }
+
+  // Django migrations under --with-services. The command must re-enter the
+  // environment the deps were installed into (the venv/tool doesn't persist
+  // across shell invocations).
+  if (out.framework?.name === "Django" && (await exists(path.join(dir, "manage.py")))) {
+    const pyRun =
+      out.pythonTool === "poetry" ? "poetry run "
+      : out.pythonTool === "uv" ? "uv run "
+      : out.pythonTool === "pipenv" ? "pipenv run "
+      : ". .venv/bin/activate && ";
+    out.migrationCommands.push(`${pyRun}python manage.py migrate`);
+  }
 }
 
 async function detectRust(dir: string, out: Detected): Promise<void> {
@@ -664,6 +697,20 @@ async function detectPostInstall(dir: string, out: Detected): Promise<void> {
     }
   }
   out.prismaSchemas = [...prismaCandidates];
+
+  // A configured seed lets `prisma db seed` run after migrations. Prisma reads
+  // it from the root package.json "prisma": { "seed": "..." } field.
+  if (out.prismaSchemas.length) {
+    const rootPkg = await tryRead(path.join(dir, "package.json"));
+    if (rootPkg) {
+      try {
+        const pkg = JSON.parse(rootPkg);
+        out.prismaSeedConfigured = !!pkg?.prisma?.seed;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   out.hasSubmodules = await exists(path.join(dir, ".gitmodules"));
 
@@ -936,6 +983,9 @@ async function detectRuby(root: string, out: Detected): Promise<void> {
     out.devUrl = out.devUrl ?? "http://localhost:3000";
     out.testCommand = out.testCommand ?? "bin/rails test";
     out.framework = out.framework ?? { name: "Rails", defaultUrl: "http://localhost:3000" };
+    // db:prepare is idempotent (create if needed → migrate → seed), safe to run.
+    const hasBinRails = await exists(path.join(root, "bin", "rails"));
+    out.migrationCommands.push(hasBinRails ? "bin/rails db:prepare" : "bundle exec rails db:prepare");
   } else if (framework === "Jekyll") {
     out.devCommand = out.devCommand ?? "bundle exec jekyll serve";
     out.devUrl = out.devUrl ?? "http://localhost:4000";

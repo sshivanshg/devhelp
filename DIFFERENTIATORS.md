@@ -40,16 +40,16 @@ The biggest single bug fix in v0.2 was the panel branching: v0.1 always rendered
 
 |  | mise | devhelp |
 |---|---|---|
-| Install Node/Python/Rust at the right version | ✅ | ✅ (delegates to mise when present) |
-| Pick package manager from lockfile | ❌ | ✅ |
-| Run `pnpm install` / `pip install` | ❌ | ✅ |
-| Copy `.env.example` → `.env` | ❌ | ✅ |
-| `prisma generate` on every schema | ❌ | ✅ |
-| Playwright browsers | ❌ | ✅ |
-| Git submodules | ❌ | ✅ |
-| Honor `.devcontainer/devcontainer.json` `postCreateCommand` natively | ❌ | ✅ |
-| Surface Docker Compose service deps | ❌ | ✅ |
-| Honest "I can't help here" panel | n/a | ✅ |
+| Install Node/Python/Rust at the right version | Yes | Yes (delegates to mise when present) |
+| Pick package manager from lockfile | No | Yes |
+| Run `pnpm install` / `pip install` | No | Yes |
+| Copy `.env.example` → `.env` | No | Yes |
+| `prisma generate` on every schema | No | Yes |
+| Playwright browsers | No | Yes |
+| Git submodules | No | Yes |
+| Honor `.devcontainer/devcontainer.json` `postCreateCommand` natively | No | Yes |
+| Surface Docker Compose service deps | No | Yes |
+| Honest "I can't help here" panel | n/a | Yes |
 
 **Concrete examples from the stress test:**
 
@@ -90,11 +90,9 @@ They're **complementary**: devhelp reads `.devcontainer/devcontainer.json` as an
 | Needs Docker | Yes | No |
 | Needs CI to exist | Yes | No (works on repos with zero CI) |
 
-## The two-mode architecture
+## Fully deterministic
 
-**Offline mode (default):** pure rules, zero network calls to AI providers. No trust barrier. Handles the 75% of repos with standard manifests.
-
-**AI mode (opt-in):** Claude-tool-use loop for unknown build scripts and guided remediation. Triggered when `ANTHROPIC_API_KEY` is in the environment. We are deliberately conservative about what we claim AI mode does — see the [`Honest about the AI mode`](./README.md#honest-about-the-ai-mode) section of the README.
+Pure rules, zero LLM, zero network calls to AI providers. No API key, no trust barrier, no nondeterminism. Repos devhelp can't recognize exit with an `UNSUPPORTED` / `INFORM` panel rather than a guess.
 
 ## v0.2 changes that mattered
 
@@ -119,4 +117,3 @@ They're **complementary**: devhelp reads `.devcontainer/devcontainer.json` as an
 - C / CMake / Lua and other non-manifest ecosystems — exit with `UNSUPPORTED` or `INFORM`, never silent
 - Cloud secret bootstrapping (1Password, doppler)
 - `.vscode/launch.json` generation
-- Local LLM backend (Ollama / llama.cpp)

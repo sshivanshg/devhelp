@@ -24,17 +24,17 @@ If you've ever cloned a repo, run `mise install`, and *still* spent 30 minutes f
 
 | Concern | mise / asdf | volta | corepack | devcontainers | **devhelp** |
 |---|---|---|---|---|---|
-| Install runtime version | ✅ | ✅ (Node only) | ❌ | ✅ (containerized) | ✅ (delegates to your existing mise/asdf/volta if present) |
-| Pick package manager | ❌ | ✅ (Node only) | ✅ (Node only) | ✅ (containerized) | ✅ (from lockfile, ground truth) |
-| Run install | ❌ | ❌ | ❌ | ✅ (`postCreateCommand`) | ✅ |
-| Copy `.env.example` → `.env` | ❌ | ❌ | ❌ | ❌ | ✅ (root + monorepo apps) |
-| `prisma generate` | ❌ | ❌ | ❌ | maybe (if author wrote it) | ✅ |
-| Playwright browsers | ❌ | ❌ | ❌ | maybe | ✅ |
-| Git submodules | ❌ | ❌ | ❌ | partially | ✅ |
-| Devcontainer `postCreateCommand` on native | ❌ | ❌ | ❌ | only inside container | ✅ |
-| Docker service surfacing | ❌ | ❌ | ❌ | ✅ | ✅ (surfaces, doesn't auto-run) |
-| Works without Docker | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Honest failure ("I don't know this stack") | ❌ (silent) | ❌ (silent) | ❌ (silent) | n/a | ✅ (`UNSUPPORTED` panel, exit 1) |
+| Install runtime version | Yes | Yes (Node only) | No | Yes (containerized) | Yes (delegates to your existing mise/asdf/volta if present) |
+| Pick package manager | No | Yes (Node only) | Yes (Node only) | Yes (containerized) | Yes (from lockfile, ground truth) |
+| Run install | No | No | No | Yes (`postCreateCommand`) | Yes |
+| Copy `.env.example` → `.env` | No | No | No | No | Yes (root + monorepo apps) |
+| `prisma generate` | No | No | No | maybe (if author wrote it) | Yes |
+| Playwright browsers | No | No | No | maybe | Yes |
+| Git submodules | No | No | No | partially | Yes |
+| Devcontainer `postCreateCommand` on native | No | No | No | only inside container | Yes |
+| Docker service surfacing | No | No | No | Yes | Yes (surfaces, doesn't auto-run) |
+| Works without Docker | Yes | Yes | Yes | No | Yes |
+| Honest failure ("I don't know this stack") | No (silent) | No (silent) | No (silent) | n/a | Yes (`UNSUPPORTED` panel, exit 1) |
 
 ## "Use mise" is great advice when
 

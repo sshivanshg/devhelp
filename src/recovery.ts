@@ -4,18 +4,27 @@
  * When a critical step fails, we scan the captured stderr/stdout tail against
  * these patterns. A match produces a "Likely fix" hint surfaced in the
  * INCOMPLETE panel. These are conservative — only patterns with a single
- * obvious remediation belong here. Anything fuzzier belongs in AI mode.
+ * obvious remediation belong here.
  */
+import type { SystemDep } from "./platform.js";
+
 export interface RecoveryRule {
   id: string;
   description: string;
   match: RegExp;
   remediation: string;
+  /**
+   * Logical system deps that fix this failure. When present and --fix is on,
+   * devhelp installs them via the detected system package manager and retries
+   * the failed step once. Absent → hint-only (no safe automatic fix).
+   */
+  systemDeps?: SystemDep[];
 }
 
 export interface RecoveryMatch {
   ruleId: string;
   remediation: string;
+  systemDeps?: SystemDep[];
 }
 
 const isMac = () => process.platform === "darwin";
@@ -39,6 +48,7 @@ const RULES: RecoveryRule[] = [
       : isLinux()
         ? "Install Python 3: apt install python3 / dnf install python3 / pacman -S python"
         : "Install Python 3 and ensure it's on PATH",
+    systemDeps: ["python3"],
   },
   {
     id: "openssl-headers-missing",
@@ -49,6 +59,7 @@ const RULES: RecoveryRule[] = [
       : isLinux()
         ? "Install: apt install libssl-dev pkg-config / dnf install openssl-devel pkgconf"
         : "Install OpenSSL development headers and pkg-config",
+    systemDeps: ["openssl-dev", "pkg-config"],
   },
 ];
 
@@ -56,7 +67,7 @@ export function findRecovery(errorText: string): RecoveryMatch | null {
   if (!errorText) return null;
   for (const rule of RULES) {
     if (rule.match.test(errorText)) {
-      return { ruleId: rule.id, remediation: rule.remediation };
+      return { ruleId: rule.id, remediation: rule.remediation, systemDeps: rule.systemDeps };
     }
   }
   return null;

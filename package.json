@@ -1,7 +1,7 @@
 {
   "name": "devhelp-cli",
   "version": "0.4.0",
-  "description": "Clone an OSS repo, get a working dev environment. Deterministic by default — detects runtimes, picks the right package manager from the lockfile, runs install, copies env files, generates Prisma client, installs Playwright. Uses your existing mise/asdf/volta if present.",
+  "description": "Clone an OSS repo, get a working dev environment. Deterministic — detects runtimes, picks the right package manager from the lockfile, runs install, copies env files, generates Prisma client, installs Playwright. Uses your existing mise/asdf/volta if present. No LLM, no network calls to AI providers.",
   "type": "module",
   "bin": {
     "devhelp": "./dist/cli.js"
@@ -26,8 +26,6 @@
   },
   "keywords": [
     "devops",
-    "ai",
-    "agent",
     "developer-tools",
     "environment-setup",
     "onboarding",
@@ -37,16 +35,15 @@
     "cli"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/devhelp/devhelp#readme",
+  "homepage": "https://github.com/sshivanshg/devhelp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/devhelp/devhelp.git"
+    "url": "git+https://github.com/sshivanshg/devhelp.git"
   },
   "bugs": {
-    "url": "https://github.com/devhelp/devhelp/issues"
+    "url": "https://github.com/sshivanshg/devhelp/issues"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.1",
     "boxen": "^8.0.1",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",

@@ -53,6 +53,38 @@ describe("detectNode — package manager from lockfile (ground truth)", () => {
   });
 });
 
+describe("detectNode — nodeVersionIsFloor (doctor floor semantics)", () => {
+  let dir: string;
+  beforeEach(async () => { dir = await makeFixture(); });
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
+
+  it("marks engines '>=18' as a floor", async () => {
+    await write(dir, "package.json", JSON.stringify({
+      name: "x", engines: { node: ">=18" }, scripts: { dev: "x" },
+    }));
+    const d = await detect(dir);
+    expect(d.nodeVersion).toBe("18");
+    expect(d.nodeVersionIsFloor).toBe(true);
+  });
+
+  it("does not mark a caret engines range as a floor", async () => {
+    await write(dir, "package.json", JSON.stringify({
+      name: "x", engines: { node: "^18.0.0" }, scripts: { dev: "x" },
+    }));
+    const d = await detect(dir);
+    expect(d.nodeVersion).toBe("18");
+    expect(d.nodeVersionIsFloor).toBe(false);
+  });
+
+  it("does not mark an exact .nvmrc pin as a floor", async () => {
+    await write(dir, "package.json", JSON.stringify({ name: "x", scripts: { dev: "x" } }));
+    await write(dir, ".nvmrc", "18.17.0\n");
+    const d = await detect(dir);
+    expect(d.nodeVersion).toBe("18.17.0");
+    expect(d.nodeVersionIsFloor).toBe(false);
+  });
+});
+
 describe("detectNode — tooling-only package.json (regression: django/mdBook)", () => {
   let dir: string;
   beforeEach(async () => { dir = await makeFixture(); });

@@ -1,7 +1,7 @@
 # Test Fixtures
 
 Each directory is a minimal project used to verify devhelp detection.
-Run: `devhelp --offline --dry-run --cwd test-fixtures/<name> "set up"`
+Run: `devhelp --dry-run --cwd test-fixtures/<name> "set up"`
 
 | Fixture | Ecosystem | Key test |
 |---|---|---|

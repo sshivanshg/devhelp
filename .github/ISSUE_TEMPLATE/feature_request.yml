@@ -21,18 +21,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: scope
-    attributes:
-      label: Which mode does this belong in?
-      options:
-        - Offline (deterministic playbook)
-        - AI-assisted (agent tool)
-        - Both
-        - Not sure
-    validations:
-      required: true
-
   - type: textarea
     id: alternatives
     attributes:

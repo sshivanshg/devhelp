@@ -9,13 +9,13 @@ export interface RunLogPayload {
   request: string;
   cwd: string;
   projectDir: string;
-  mode: "offline";
   dryRun: boolean;
   status: "READY" | "INCOMPLETE" | "UNSUPPORTED" | "INFORM";
   detected?: Record<string, unknown>;
   executedSteps: string[];
   failedSteps: { name: string; error: string; recovery?: string }[];
   warnings: string[];
+  verify?: { name: string; ok: boolean; detail: string }[];
   env: {
     platform: NodeJS.Platform;
     arch: string;
