@@ -36,7 +36,7 @@ describe("buildLaunchConfig", () => {
 describe("secretsCommand", () => {
   it("uses op inject for 1Password", () => {
     expect(secretsCommand({ name: "1Password", cli: "op", template: ".env.example" }))
-      .toBe("op inject -i .env.example -o .env");
+      .toBe('op inject -i ".env.example" -o .env');
   });
   it("uses doppler download for Doppler", () => {
     expect(secretsCommand({ name: "Doppler", cli: "doppler" })).toContain("doppler secrets download");

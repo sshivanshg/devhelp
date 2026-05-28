@@ -14,6 +14,12 @@ Fully deterministic. Honest about what it can't do.
 
 [Install](#install) · [Receipts](#receipts) · [Why not mise?](#why-not-mise) · [How it works](#how-it-works) · [Examples](#examples) · [Contributing](#contributing)
 
+<br>
+
+![devhelp setting up the documenso Prisma/Next.js monorepo](https://raw.githubusercontent.com/sshivanshg/devhelp/main/demo/devhelp.gif)
+
+<sub>One command reads the documenso monorepo and plans the whole setup — Node 22, `npm ci`, `.env`, `prisma generate`, Playwright, and the Next.js dev URL. (Shown with `--dry-run`; a real run executes the same steps.)</sub>
+
 </div>
 
 ---
@@ -44,17 +50,17 @@ It's **fully deterministic**: pure rules + lockfile reading, no LLM and no netwo
 
 ## Receipts
 
-Most OSS dev-tool READMEs leave this part out. Here's the measured behavior on 20 randomly-chosen popular OSS repos:
+Most OSS dev-tool READMEs leave this part out. Here's the measured behavior (v0.2 re-run) on 20 randomly-chosen popular OSS repos:
 
 | Status | Repos | What happened |
 |---|---|---|
 | **Clean setup** | 15/20 | Detected stack, picked right pm, installed runtime, ran post-install |
-| **Honest refusal** | 1/20 | `neovim` (C + CMake): `UNSUPPORTED` panel, exit 1 |
+| **Honest refusal** | 1/20 | `neovim`: at v0.2, C + CMake wasn't recognized → red `UNSUPPORTED` panel, exit 1. *(Re-checked on v0.5: neovim now ships `build.zig`, and devhelp gained Zig support in v0.4 — it detects as Zig and reaches READY. The exit-1 refusal still fires for genuinely unrecognized stacks.)* |
 | **Partial / known limitation** | 4/20 | Detected, but service deps (Postgres/Redis) need manual `docker compose up` first |
 
 That's 75% clean on real repos, with **zero silent failures** since v0.2 — failures get an amber `INCOMPLETE` or red `UNSUPPORTED` panel and non-zero exit, not a fake-green "READY."
 
-Full breakdown: [`stress-test/SUMMARY.md`](./stress-test/SUMMARY.md) · [`stress-test/FAILURE_PATTERNS.md`](./stress-test/FAILURE_PATTERNS.md). Read the failure patterns before you trust the numbers.
+These numbers come from the v0.2 re-run in [`stress-test/RETEST_RESULTS.md`](./stress-test/RETEST_RESULTS.md) (per-repo before/after). The original v0.1 baseline that drove the fixes is in [`stress-test/SUMMARY.md`](./stress-test/SUMMARY.md) · [`stress-test/FAILURE_PATTERNS.md`](./stress-test/FAILURE_PATTERNS.md). Read the failure patterns before you trust the numbers.
 
 ## Why not mise?
 

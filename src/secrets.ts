@@ -51,7 +51,7 @@ export async function detectSecretsProvider(
 export function secretsCommand(provider: SecretsProvider): string {
   if (provider.name === "1Password") {
     // op inject resolves op:// refs from the template into a concrete .env.
-    return `op inject -i ${provider.template ?? ".env.example"} -o .env`;
+    return `op inject -i "${provider.template ?? ".env.example"}" -o .env`;
   }
   // Doppler: write the project's resolved secrets into .env.
   return `doppler secrets download --no-file --format env > .env`;

@@ -44,22 +44,15 @@ jobs:
           echo "20.11.1" > .nvmrc
           echo '{"name":"smoke","packageManager":"pnpm@9.0.0","scripts":{"dev":"vite","test":"vitest"}}' > package.json
           touch pnpm-lock.yaml
-          node "$GITHUB_WORKSPACE/dist/cli.js" --offline --dry-run --cwd /tmp/smoke "set up this project"
+          node "$GITHUB_WORKSPACE/dist/cli.js" --dry-run --cwd /tmp/smoke "set up this project"
 
-      - name: Smoke test — unsupported stack should exit non-zero
+      - name: Smoke test — unrecognized stack should exit non-zero
         run: |
           mkdir -p /tmp/unsupported && cd /tmp/unsupported
-          cat > CMakeLists.txt <<'EOF'
-          cmake_minimum_required(VERSION 3.20)
-          project(TestProject)
-          EOF
-          cat > Makefile <<'EOF'
-          all:
-          	echo "build"
-          EOF
-          if node "$GITHUB_WORKSPACE/dist/cli.js" --offline --dry-run --cwd /tmp/unsupported "set up this project"; then
-            echo "FAIL: unsupported stack should have exited non-zero"
+          echo "just some prose, no manifest devhelp understands" > README.md
+          if node "$GITHUB_WORKSPACE/dist/cli.js" --dry-run --cwd /tmp/unsupported "set up this project"; then
+            echo "FAIL: unrecognized stack should have exited non-zero"
             exit 1
           else
-            echo "PASS: correctly refused unsupported stack"
+            echo "PASS: correctly refused unrecognized stack"
           fi

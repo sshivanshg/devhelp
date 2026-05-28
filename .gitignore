@@ -6,7 +6,11 @@ dist/
 .DS_Store
 .npmrc
 CLAUDE.md
-# Internal: stress test artifacts and overnight logs (not for the public repo)
-stress-test/
+# Stress-test: the three findings docs are public (linked from the README);
+# raw logs, results JSON, shell scripts, and draft issue text stay internal.
+stress-test/*
+!stress-test/SUMMARY.md
+!stress-test/FAILURE_PATTERNS.md
+!stress-test/RETEST_RESULTS.md
 overnight-log.md
 docs/trial-*.md

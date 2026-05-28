@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-26
+
 ### Removed
 - **AI-assisted mode.** devhelp is now fully deterministic — the Claude tool-use loop (`agent.ts`/`tools.ts`), the `@anthropic-ai/sdk` dependency, and the `--yes` / `--model` / `--max-steps` / `--offline` flags are gone. Setup is pure rules + lockfile reading, with no LLM and no network calls to AI providers.
 
 ### Fixed
 - **zsh glob crash on `lts/*`.** Node version tokens like `lts/*` were interpolated unquoted into `nvm install`/`nvm use`; under zsh (the macOS default shell) the `*` glob-expanded and failed with `zsh: no matches found`, breaking setup for any Node repo without an explicit version pin. Version tokens are now quoted. Regression-guarded in `test/shell-quoting.test.ts`.
+- **`doctor` false mismatch on `>=` engines.** A `>=N` lower bound (e.g. `engines.node: ">=18"`) was compared as an exact pin, so a newer installed runtime (v20) was wrongly flagged as a mismatch and exited non-zero — a false alarm for the CI use case. Floors are now satisfied by any newer version; exact pins, carets, and tildes still compare strictly. Regression tests in `test/versions.test.ts`, `test/doctor-version.test.ts`, `test/detect-node.test.ts`.
+- **`--dry-run` showed nothing useful.** Dry-run skipped the clone, so detection always saw an empty directory and reported `UNSUPPORTED`. It now does a shallow clone to inspect the real manifests, prints an accurate plan, and removes the clone before exiting so the working directory is left untouched.
+- **`--vscode` ran on unrecognized stacks.** The launch.json step is now skipped when nothing is detected, instead of offering to write a config for an `UNSUPPORTED` project.
+- **`--version` was hardcoded.** The CLI version is now read from `package.json` rather than a literal, so it tracks releases automatically. The three duplicate version readers are consolidated into one `pkgVersion()`.
 
 ### Security
 - Version/toolchain strings read from cloned manifests are validated before being interpolated into shell commands; values containing shell metacharacters are refused, closing a command-injection vector. New "Security / trust model" section in the README.
