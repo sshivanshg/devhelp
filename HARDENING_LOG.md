@@ -1,8 +1,38 @@
 # Hardening Log
 
-## Running Summary
+## Summary
 
-In progress. Current focus: rename cleanup, reproducible container sweeps, and clean-machine runtime/package-manager failures.
+Current branch: `hardening-production-readiness`.
+
+Bugs found and fixed in this pass:
+- Clean Linux Python `uv` projects failed after pyenv install because the `uv` CLI was not present. Fixed by bootstrapping `uv`/`poetry`/`pipenv` through `python3 -m pip install --user <tool>` when missing.
+- React Native dry-run crashed before a panel because Gemfile Ruby floor specs like `>= 2.6.10` reached the shell-safety gate as raw unsafe strings. Fixed by normalizing Ruby version requirements to installable tokens.
+- Dry-run clone failures for nonexistent/private repos were misreported as `UNSUPPORTED STACK`. Fixed by recording clone failure as a critical step and prioritizing `INCOMPLETE`.
+- Dry-run inspection clones could be left behind if a fatal error happened after clone/detect. Fixed with idempotent `finally` cleanup.
+
+Verified now:
+- `npx tsc --noEmit` clean.
+- `yarn vitest run` clean: 191 tests passing, up from the 186-test baseline.
+- `npm run build` succeeds.
+- Zero legacy `offline` naming hits in `src`, `test`, `docs`, README/CHANGELOG/CONTRIBUTING, and `stress-test`.
+- Clean Linux core sweep: 9/9 READY across Node npm, Node pnpm, Node yarn dry-run, Python uv after pyenv-from-source, Go dry-run, Rust dry-run, Ruby dry-run, and Astro monorepo dry-run.
+- Broad Linux dry-run sweep: 31/31 READY across the advertised ecosystem matrix.
+- `--with-services`: verified compose up + Prisma generate + Prisma migrate deploy against a real Postgres container on port 55433, then queried the DB to prove the migration applied.
+- Failure panels manually verified for nonexistent/private repo and Docker daemon down; recovery tests cover DB unreachable, port in use, disk full, missing native build deps, network/registry, and repo auth/not-found.
+
+Still best-effort / remaining risk:
+- Native Windows is not end-to-end verified; WSL/Git Bash remains the supported path.
+- The broad 31-repo pass is dry-run detection, not real install for every ecosystem.
+- Out-of-disk and GitHub API rate-limit behavior are covered by deterministic recovery/skip logic, not by forcing the host into those exact states.
+
+Review and merge commands:
+- `git checkout hardening-production-readiness`
+- `npx tsc --noEmit`
+- `yarn vitest run`
+- `npm run build`
+- `stress-test/container-sweep.sh core`
+- `stress-test/container-sweep.sh dry-run`
+- `stress-test/with-services-smoke.sh`
 
 ## 2026-05-29
 
