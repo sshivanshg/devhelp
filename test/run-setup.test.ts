@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runSetup } from "../src/setup.js";
+import { cleanupDryRunTempClone, runSetup } from "../src/setup.js";
 
 // End-to-end regression guard for the orchestration layer (setup.ts).
 // We drive runSetup with a request that has no extractable repo, so it
@@ -58,5 +58,19 @@ describe("runSetup (dry-run, no network)", () => {
     const code = await runSetup({ request: REQUEST, cwd: dir, dryRun: true, json: true });
 
     expect(code).toBe(1);
+  });
+});
+
+describe("cleanupDryRunTempClone", () => {
+  it("removes the temp clone path and clears it so cleanup is idempotent", async () => {
+    const dir = await makeFixture();
+    await write(dir, "README.md", "temp clone");
+
+    const ctx = { dryRunTempClone: dir } as any;
+    await cleanupDryRunTempClone(ctx);
+    await cleanupDryRunTempClone(ctx);
+
+    expect(ctx.dryRunTempClone).toBeUndefined();
+    await expect(fs.stat(dir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

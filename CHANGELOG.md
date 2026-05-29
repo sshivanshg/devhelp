@@ -9,6 +9,7 @@
 - Python `uv`/`poetry`/`pipenv` installs now bootstrap the missing tool CLI on clean machines before running the project install command. Verified with a clean Linux container real run of `pallets/flask`.
 - Ruby versions declared as Gemfile floor requirements (for example `ruby ">= 2.6.10"`) now normalize to an installable version token instead of tripping the shell-safety gate. Verified with a clean Linux dry-run of `facebook/react-native`.
 - Dry-run clone failures now report `INCOMPLETE` with the real clone/access cause instead of falling through to an `UNSUPPORTED STACK` panel.
+- Dry-run inspection clones are now removed from a `finally` cleanup path, so fatal errors after clone/detect do not leave temporary checkouts behind.
 
 ## [0.6.0] — 2026-05-28
 

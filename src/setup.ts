@@ -103,6 +103,7 @@ export async function runSetup(opts: SetupOptions): Promise<number> {
     envPreexisted: false,
   };
 
+  try {
   // Native-Windows guard: our install commands are bash syntax. Warn clearly
   // up front rather than letting each step fail cryptically.
   if (pickShell() === null) {
@@ -321,9 +322,7 @@ export async function runSetup(opts: SetupOptions): Promise<number> {
   }
 
   // A dry run leaves nothing behind: drop the throwaway clone we read from.
-  if (ctx.dryRunTempClone) {
-    await fs.rm(ctx.dryRunTempClone, { recursive: true, force: true });
-  }
+  await cleanupDryRunTempClone(ctx);
 
   const payload = buildRunLogPayload(ctx, status);
   if (ctx.verifyChecks) payload.verify = ctx.verifyChecks;
@@ -344,6 +343,9 @@ export async function runSetup(opts: SetupOptions): Promise<number> {
   }
   // A passed setup whose verification failed is still a non-zero outcome.
   return exitCode === 0 && verifyFailed ? 1 : exitCode;
+  } finally {
+    await cleanupDryRunTempClone(ctx);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -839,6 +841,13 @@ async function runCloneStep(ctx: PlaybookCtx): Promise<void> {
   ctx.cloned = true;
   ctx.done.push(`cloned ${repo.url}`);
   say(ctx, chalk.green("  ✔"), `Cloned to ${prettyPath(dest)}`);
+}
+
+export async function cleanupDryRunTempClone(ctx: PlaybookCtx): Promise<void> {
+  if (!ctx.dryRunTempClone) return;
+  const tempClone = ctx.dryRunTempClone;
+  ctx.dryRunTempClone = undefined;
+  await fs.rm(tempClone, { recursive: true, force: true });
 }
 
 /**
