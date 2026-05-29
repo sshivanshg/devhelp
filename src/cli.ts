@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import chalk from "chalk";
-import { runOffline, runDoctor } from "./offline.js";
+import { runSetup, runDoctor, formatFatalError } from "./setup.js";
 import { runMcpServer } from "./mcp.js";
 import { pkgVersion } from "./versions.js";
 
@@ -55,7 +55,7 @@ program
     const request = requestParts.join(" ").trim();
 
     try {
-      const exitCode = await runOffline({
+      const exitCode = await runSetup({
         request,
         cwd: opts.cwd,
         dryRun: opts.dryRun,
@@ -74,7 +74,7 @@ program
       if (opts.json) {
         console.log(JSON.stringify({ status: "ERROR", error: message }, null, 2));
       } else {
-        console.error(chalk.red("\ndevhelp failed:"), message);
+        console.error("\n" + formatFatalError(err) + "\n");
       }
       process.exit(1);
     }

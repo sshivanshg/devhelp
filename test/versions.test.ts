@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   normalizeNodeVersion,
+  normalizeRubyVersion,
   isSafeVersionToken,
   findUnsafeVersionField,
   isFloorSpec,
@@ -42,6 +43,17 @@ describe("normalizeNodeVersion", () => {
   it("handles empty string", () => {
     expect(normalizeNodeVersion("")).toBe("lts/*");
     expect(normalizeNodeVersion("   ")).toBe("lts/*");
+  });
+});
+
+describe("normalizeRubyVersion", () => {
+  it("normalizes Gemfile floor specs to installable versions", () => {
+    expect(normalizeRubyVersion(">= 2.6.10")).toBe("2.6.10");
+    expect(normalizeRubyVersion(">=3.1")).toBe("3.1");
+  });
+
+  it("passes concrete Ruby versions through", () => {
+    expect(normalizeRubyVersion("3.3.0")).toBe("3.3.0");
   });
 });
 

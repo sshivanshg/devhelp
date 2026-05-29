@@ -1,7 +1,7 @@
 # Stress Test Summary
 
 > **Historical — v0.1.0 baseline (2026-05-23).** This is devhelp's first warts-and-all
-> stress test, run *before* the v0.2 fix pipeline. Its headline finding — "the offline
+> stress test, run *before* the v0.2 fix pipeline. Its headline finding — "the
 > dry-run path cannot fail" — was the #1 bug it surfaced, and it is fixed. For the
 > current numbers (25% → 75% clean, `neovim` now honestly refused) see the v0.2 re-run
 > in [`RETEST_RESULTS.md`](./RETEST_RESULTS.md). Kept public because the receipts matter
@@ -10,11 +10,11 @@
 **Date:** 2026-05-23
 **devhelp version:** 0.1.0 (local build, not yet on npm)
 **Repos tested:** 20
-**Method:** `devhelp --offline --dry-run "set up this project"` on each cloned repo, plus one real-install attempt on `tiangolo/fastapi`.
+**Method:** the historical dry-run command on each cloned repo, plus one real-install attempt on `tiangolo/fastapi`.
 
 ## Headline
 
-**0/20 repos returned a meaningful failure status.** All 20 returned exit 0 and showed a green READY panel. This is the most important finding of the entire stress test: in offline mode, devhelp *cannot fail*. That makes the success/failure label useless and hides every other detection bug.
+**0/20 repos returned a meaningful failure status.** All 20 returned exit 0 and showed a green READY panel. This is the most important finding of the entire stress test: the setup runner *could not fail*. That made the success/failure label useless and hid every other detection bug.
 
 Real-install on `fastapi` confirmed the same problem from the other direction: `pip install -e .` failed (`command not found: python` after pyenv install), exit was non-zero, but devhelp drew the green READY panel anyway.
 
@@ -68,6 +68,6 @@ Avoid using `cal.com` as the demo until the Prisma path is fixed and Docker-depe
 
 ## Ship readiness: **NOT READY**
 
-**Reason:** Offline mode cannot fail (Pattern 1) and the canonical demo (cal.com) misses its Prisma schema (Pattern 3). Both are simple fixes (likely <50 lines combined), but until they land, the marketing claim "one command and everything is set up" is provably false on the headline use case.
+**Reason:** The setup runner could not fail (Pattern 1) and the canonical demo (cal.com) missed its Prisma schema (Pattern 3). Both were simple fixes (likely <50 lines combined), but until they landed, the marketing claim "one command and everything is set up" was provably false on the headline use case.
 
 After Patterns 1 + 2 + 3 are fixed: ALMOST. After Pattern 4 (Vite false positive) is fixed: READY.

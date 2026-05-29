@@ -34,15 +34,68 @@ describe("recovery rules", () => {
     expect(findRecovery("")).toBeNull();
   });
 
-  it("exposes exactly three rules", () => {
-    expect(listRules()).toHaveLength(3);
+  it("matches Docker daemon down", () => {
+    const r = findRecovery(
+      "unable to get image 'x': Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+    );
+    expect(r?.ruleId).toBe("docker-daemon-down");
+    expect(r?.cause).toMatch(/docker/i);
   });
 
-  it("every rule has a non-empty remediation", () => {
+  it("matches an unreachable database (Prisma P1001)", () => {
+    const r = findRecovery("Error: P1001: Can't reach database server at `localhost:5450`");
+    expect(r?.ruleId).toBe("db-unreachable");
+    expect(r?.remediation).toMatch(/--with-services|docker compose/i);
+  });
+
+  it("matches a missing Prisma schema", () => {
+    const r = findRecovery(
+      "Error: Could not load `--schema` from provided path `packages/prisma/schema.prisma`: file or directory not found",
+    );
+    expect(r?.ruleId).toBe("prisma-schema-missing");
+  });
+
+  it("matches conflicting env vars", () => {
+    const r = findRecovery("Error: There is a conflict between env vars in .env and packages/prisma/.env");
+    expect(r?.ruleId).toBe("env-var-conflict");
+  });
+
+  it("matches a port already in use", () => {
+    expect(findRecovery("Error: listen EADDRINUSE: address already in use :::3000")?.ruleId).toBe(
+      "port-in-use",
+    );
+  });
+
+  it("matches a network/clone failure", () => {
+    expect(findRecovery("fatal: fetch-pack: invalid index-pack output")?.ruleId).toBe(
+      "network-unreachable",
+    );
+    expect(findRecovery("getaddrinfo ENOTFOUND registry.npmjs.org")?.ruleId).toBe(
+      "network-unreachable",
+    );
+  });
+
+  it("matches a missing/private repo (the common typo) and not as a network blip", () => {
+    expect(findRecovery("remote: Repository not found.\nfatal: repository 'https://github.com/x/y.git/' not found")?.ruleId).toBe(
+      "repo-not-found",
+    );
+    expect(findRecovery("fatal: Authentication failed for 'https://github.com/x/private.git/'")?.ruleId).toBe(
+      "repo-not-found",
+    );
+    // A bad repo must NOT be treated as a transient network error (no wasted retry).
+    expect(findRecovery("remote: Repository not found.")?.ruleId).not.toBe("network-unreachable");
+  });
+
+  it("every rule has a non-empty remediation and cause", () => {
     for (const r of listRules()) {
       expect(r.remediation.length).toBeGreaterThan(0);
+      expect(r.description.length).toBeGreaterThan(0);
       expect(r.id).toMatch(/^[a-z][a-z0-9-]+$/);
     }
+  });
+
+  it("returns the rule's human cause on a match", () => {
+    expect(findRecovery("Cannot connect to the Docker daemon")?.cause).toBeTruthy();
   });
 
   it("auto-fixable rules surface their system deps", () => {

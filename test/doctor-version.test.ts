@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { versionStatus } from "../src/offline.js";
+import { versionStatus } from "../src/setup.js";
 
 describe("versionStatus", () => {
   it("missing when nothing is installed", () => {

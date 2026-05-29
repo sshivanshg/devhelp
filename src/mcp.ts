@@ -10,7 +10,7 @@
  * (detect, diagnoseProject) are print-free by construction.
  */
 import { detect, isDetectionEmpty } from "./detect.js";
-import { describe, diagnoseProject } from "./offline.js";
+import { describe, diagnoseProject } from "./setup.js";
 import { pkgVersion } from "./versions.js";
 
 const PROTOCOL_VERSION = "2024-11-05";

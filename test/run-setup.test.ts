@@ -2,16 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runOffline } from "../src/offline.js";
+import { runSetup } from "../src/setup.js";
 
-// End-to-end regression guard for the orchestration layer (offline.ts).
-// We drive runOffline with a request that has no extractable repo, so it
+// End-to-end regression guard for the orchestration layer (setup.ts).
+// We drive runSetup with a request that has no extractable repo, so it
 // inspects --cwd directly with no network clone, and with dryRun so it plans
 // without installing anything. This mirrors the CI smoke tests as a unit-level
 // guard against the main flow silently changing its exit-code contract.
 
 async function makeFixture(): Promise<string> {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "devhelp-runoffline-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "devhelp-runsetup-"));
 }
 
 async function write(dir: string, file: string, content: string): Promise<void> {
@@ -22,7 +22,7 @@ async function write(dir: string, file: string, content: string): Promise<void> 
 
 const REQUEST = "set up this project"; // no owner/repo → no clone
 
-describe("runOffline (dry-run, no network)", () => {
+describe("runSetup (dry-run, no network)", () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -44,7 +44,7 @@ describe("runOffline (dry-run, no network)", () => {
     await write(dir, ".nvmrc", "20.11.1");
 
     const before = (await fs.readdir(dir)).sort();
-    const code = await runOffline({ request: REQUEST, cwd: dir, dryRun: true, json: true });
+    const code = await runSetup({ request: REQUEST, cwd: dir, dryRun: true, json: true });
     const after = (await fs.readdir(dir)).sort();
 
     expect(code).toBe(0);
@@ -55,7 +55,7 @@ describe("runOffline (dry-run, no network)", () => {
   it("exits non-zero on an unrecognized stack", async () => {
     await write(dir, "README.md", "just prose, no manifest devhelp understands");
 
-    const code = await runOffline({ request: REQUEST, cwd: dir, dryRun: true, json: true });
+    const code = await runSetup({ request: REQUEST, cwd: dir, dryRun: true, json: true });
 
     expect(code).toBe(1);
   });

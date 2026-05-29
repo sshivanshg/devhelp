@@ -7,7 +7,7 @@
  *   - Doppler: a `doppler.yaml` / `.doppler.yaml` project config → `doppler secrets download`.
  *
  * Opt-in via --secrets, and it relies on the user already being signed in to the
- * provider CLI. Command-building is pure and unit-tested; the run is in offline.ts.
+ * provider CLI. Command-building is pure and unit-tested; the run is in setup.ts.
  */
 import { promises as fs } from "node:fs";
 import * as path from "node:path";

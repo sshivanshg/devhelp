@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { composeUpCommand } from "../src/offline.js";
+import { composeUpCommand } from "../src/setup.js";
 
 describe("composeUpCommand", () => {
   it("adds --wait for Compose v2", () => {

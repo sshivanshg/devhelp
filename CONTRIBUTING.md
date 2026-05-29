@@ -35,13 +35,13 @@ npx tsc --noEmit
 src/
   cli.ts        Entry point + flag parsing.
   detect.ts     Manifest/lockfile detection → a Detected description.
-  offline.ts    Deterministic playbook. Runs the install steps for what was detected.
+  setup.ts      Deterministic playbook. Runs the install steps for what was detected.
   recovery.ts   Pattern-matched "likely fix" hints for known install failures.
 ```
 
 ## Adding a detector
 
-Detectors live in `src/offline.ts` inside `detect()`. A detector should:
+Detectors live in `src/detect.ts`. A detector should:
 
 1. Read manifest files via `tryRead(...)` (returns `null` if missing — never throw).
 2. Set the appropriate field on `Detected` (e.g. `out.nodeVersion`).

@@ -13,7 +13,7 @@ export interface RunLogPayload {
   status: "READY" | "INCOMPLETE" | "UNSUPPORTED" | "INFORM";
   detected?: Record<string, unknown>;
   executedSteps: string[];
-  failedSteps: { name: string; error: string; recovery?: string }[];
+  failedSteps: { name: string; error: string; cause?: string; command?: string; recovery?: string }[];
   warnings: string[];
   verify?: { name: string; ok: boolean; detail: string }[];
   env: {

@@ -1,10 +1,10 @@
 {
   "name": "devhelp-cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Clone an OSS repo, get a working dev environment. Deterministic — detects runtimes, picks the right package manager from the lockfile, runs install, copies env files, generates Prisma client, installs Playwright. Uses your existing mise/asdf/volta if present. No LLM, no network calls to AI providers.",
   "type": "module",
   "bin": {
-    "devhelp": "./dist/cli.js"
+    "devhelp": "dist/cli.js"
   },
   "files": [
     "dist",

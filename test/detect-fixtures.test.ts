@@ -36,6 +36,7 @@ const CASES: Record<string, Expectation> = {
   "kotlin-gradle": { javaVersion: "21", javaIsKotlin: true },
   "ocaml-dune": { ocamlVersion: "5.1.0", framework: "OCaml" },
   "php-laravel": { phpVersion: "8.2", framework: "Laravel" },
+  "python-ci-prerelease": { pythonVersion: "3.13" },
   "php-wordpress": { phpVersion: "7.4", framework: "WordPress" },
   "r-package": { rVersion: "4.3", framework: "R" },
   "r-renv": { rVersion: "4.3", framework: "R (Shiny)" },

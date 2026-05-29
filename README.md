@@ -12,13 +12,13 @@
 **Clone an OSS repo. Get a working dev environment.**
 Fully deterministic. Honest about what it can't do.
 
-[Install](#install) · [Receipts](#receipts) · [Why not mise?](#why-not-mise) · [How it works](#how-it-works) · [Examples](#examples) · [Contributing](#contributing)
+[Install](#install) · [Receipts](#receipts) · [Why not mise?](#why-not-mise) · [How it works](#how-it-works) · [Examples](#examples) · [When it can't finish](#when-it-cant-finish) · [Contributing](#contributing)
 
 <br>
 
 ![devhelp setting up the documenso Prisma/Next.js monorepo](https://raw.githubusercontent.com/sshivanshg/devhelp/main/demo/devhelp.gif)
 
-<sub>One command reads the documenso monorepo and plans the whole setup — Node 22, `npm ci`, `.env`, `prisma generate`, Playwright, and the Next.js dev URL. (Shown with `--dry-run`; a real run executes the same steps.)</sub>
+<sub>One command reads the documenso monorepo and plans the whole setup — Node 22, the right package manager, `.env`, `prisma generate`, Playwright, and the Next.js dev URL. <em>This clip is the <code>--dry-run</code> plan (detection + step ordering). For real, verified end-to-end runs see <a href="#examples">Examples</a> and <a href="#receipts">Receipts</a>.</em></sub>
 
 </div>
 
@@ -50,17 +50,22 @@ It's **fully deterministic**: pure rules + lockfile reading, no LLM and no netwo
 
 ## Receipts
 
-Most OSS dev-tool READMEs leave this part out. Here's the measured behavior (v0.2 re-run) on 20 randomly-chosen popular OSS repos:
+Most OSS dev-tool READMEs skip this. Here's the **measured behavior on v0.6.0**, running devhelp for real — a full (non-dry-run) clone + install — against a spread of popular repos on macOS:
 
-| Status | Repos | What happened |
+| Repo | Stack | Result |
 |---|---|---|
-| **Clean setup** | 15/20 | Detected stack, picked right pm, installed runtime, ran post-install |
-| **Honest refusal** | 1/20 | `neovim`: at v0.2, C + CMake wasn't recognized → red `UNSUPPORTED` panel, exit 1. *(Re-checked on v0.5: neovim now ships `build.zig`, and devhelp gained Zig support in v0.4 — it detects as Zig and reaches READY. The exit-1 refusal still fires for genuinely unrecognized stacks.)* |
-| **Partial / known limitation** | 4/20 | Detected, but service deps (Postgres/Redis) need manual `docker compose up` first |
+| `expressjs/express` | Node · npm | ✅ READY |
+| `vitejs/vite` | Node · pnpm monorepo | ✅ READY |
+| `pallets/flask` | Python · uv | ✅ READY |
+| `tiangolo/fastapi` | Python · pip / venv | ✅ READY |
+| `gin-gonic/gin` | Go | ✅ READY |
+| `documenso/documenso` | Next.js · npm · turbo monorepo · Prisma · Playwright | ✅ READY — its committed lockfile is out of sync so `npm ci` refused; devhelp fell back to `npm install` and warned about it |
 
-That's 75% clean on real repos, with **zero silent failures** since v0.2 — failures get an amber `INCOMPLETE` or red `UNSUPPORTED` panel and non-zero exit, not a fake-green "READY."
+**6/6 reached READY — zero silent failures, zero fake-green.** (When a step *can't* be recovered, devhelp exits non-zero with a what/why/fix panel rather than a green lie — see [When it can't finish](#when-it-cant-finish).) Separately, a dry-run *detection* pass over 13 repos (the six above plus `sveltejs/svelte`, `vuejs/core`, `psf/requests`, `gohugoio/hugo`, `BurntSushi/ripgrep`, `clap-rs/clap`, `prisma/prisma`) identified the stack and planned the right steps on all 13.
 
-These numbers come from the v0.2 re-run in [`stress-test/RETEST_RESULTS.md`](./stress-test/RETEST_RESULTS.md) (per-repo before/after). The original v0.1 baseline that drove the fixes is in [`stress-test/SUMMARY.md`](./stress-test/SUMMARY.md) · [`stress-test/FAILURE_PATTERNS.md`](./stress-test/FAILURE_PATTERNS.md). Read the failure patterns before you trust the numbers.
+Honest caveats on these numbers: the six above were run on **macOS** with common runtimes already installed, against popular, well-maintained repos. A clean Linux container sweep also reached READY for 9/9 core smoke cases: Node npm, Node pnpm, Node yarn, Python uv after pyenv-from-source, Go, Rust, Ruby, and an Astro monorepo dry-run. A broad Linux dry-run detection sweep reached READY for 31/31 repos across the advertised ecosystem matrix. `--with-services` was verified with a throwaway Postgres compose + Prisma migration, including a DB query proving the migration applied. Still thin: large real installs across every ecosystem and native Windows — see [What it won't do (yet)](#what-it-wont-do-yet).
+
+This is a **small, honest sample** — deliberately not a "works on 99% of GitHub" claim. The point isn't the percentage; it's that when devhelp can't finish, it tells you exactly why and what to do, and saves a reproducible run log. Run it on your own repos and, when it falls short, [open an issue](https://github.com/sshivanshg/devhelp/issues). The older v0.1/v0.2 stress-test history lives in [`stress-test/`](./stress-test/).
 
 ## Why not mise?
 
@@ -68,9 +73,14 @@ Short answer: **mise manages runtime versions. devhelp does runtime versions *an
 
 Full comparison vs. mise, asdf, volta, corepack, devbox, devenv.sh, and devcontainers: [`docs/WHY-NOT-MISE.md`](./docs/WHY-NOT-MISE.md).
 
-## Coverage (v0.4)
+## Coverage
 
-31 ecosystems covered — ~99% of real OSS repos on GitHub. v0.4 added Swift/iOS, Android native, React Native, Expo, Haskell, Scala, Clojure, R, Julia, Zig, OCaml, Bazel, Nx, and INFORM panels for Terraform/Ansible/Helm/Pulumi.
+devhelp detects 31 ecosystems — but "detects" and "proven end-to-end" aren't the same thing, so here are the two tiers honestly:
+
+- **Verified end-to-end (v0.6.0):** **Node, Python, Go** — exercised by real clone-and-install runs that reached READY (see [Receipts](#receipts)). **Rust** is verified by detection fixtures + dry-run, not yet a real-install run. These are the paths to trust.
+- **Detected & planned:** the other ~27 ecosystems are recognized, surface the right runtime + commands, and are guarded by detection fixtures — but most haven't been through a real install on a real repo yet. Treat them as **best-effort**: when one falls short, it exits with an honest `INCOMPLETE`/`INFORM` panel and a fix, never a fake-green READY.
+
+The table below lists all of them; the tier above tells you how far each has actually been proven.
 
 | Ecosystem | Detection | Install | Notes |
 |---|---|---|---|
@@ -123,9 +133,12 @@ Or run without installing:
 npx devhelp-cli "set up this project"
 ```
 
-The npm package is `devhelp-cli`; the command on your PATH is still `devhelp`.
+The npm package is `devhelp-cli`; the command on your PATH is still `devhelp`. (The shorter `devhelp` name is taken on npm by an unrelated package, so the published name is `devhelp-cli`.)
 
 Requirements: Node 18+. macOS and Linux supported. (Windows: WSL works; native is on the roadmap.)
+
+> [!WARNING]
+> **devhelp runs the repo's own code.** Setting up a project executes its install/build scripts (`npm install` post-install hooks, `cargo build`, `bundle install`, …) — exactly as if you'd run them by hand. devhelp does **not** sandbox them. Only point it at repos you'd already trust enough to `npm install`. Use `--dry-run` to preview every command first. See [Security / trust model](#security--trust-model).
 
 ## Quickstart
 
@@ -195,65 +208,80 @@ Lockfile presence overrides whatever `packageManager` claims. The lockfile is gr
 
 ## Examples
 
+These are **real (non-dry-run) v0.6.0 runs**, copied verbatim — one that works, one that honestly can't finish.
+
 <details open>
-<summary><strong>Full-stack Next.js app (dry-run)</strong></summary>
+<summary><strong>Python API — <code>tiangolo/fastapi</code> (real run → READY)</strong></summary>
 
 ```
-  devhelp · DRY RUN
-  › set up this project
+  devhelp
+  › tiangolo/fastapi
 
-↓ Cloning repository                    [skipped: working in $PWD]
-✔ Detected: Next.js, node 20.11.1, pnpm, prisma, playwright
-↓ Initializing git submodules           [skipped: no .gitmodules]
-✔ Installed Node 20.11.1
-✔ Installed dependencies                 pnpm install
-✔ Env: .env.example → .env
-✔ Prisma client generated (1)
-✔ Playwright browsers installed
+  ↪ Cloning https://github.com/tiangolo/fastapi.git
+  ✔ Cloned to ./fastapi
+  ✔ Detected: FastAPI, python 3.11
+  ✔ Installed Python 3.11
+  ✔ Installed · python3 -m venv .venv && . .venv/bin/activate && pip install -e .
 
-╭──────────────────── Next.js ────────────────────╮
-│                                                 │
-│  READY                                          │
-│                                                 │
-│    cd ./my-app                                  │
-│    pnpm run dev   → http://localhost:3000       │
-│    pnpm test      # tests                       │
-│                                                 │
-│    ! Review .env and fill in real values        │
-│                                                 │
-╰─────────────────────────────────────────────────╯
+╭────────── FastAPI ──────────╮
+│                             │
+│  READY                      │
+│                             │
+│    cd ./fastapi             │
+│    pytest   # tests         │
+│                             │
+╰─────────────────────────────╯
+  Full log: ~/.devhelp/runs/<timestamp>.json
 ```
 
 </details>
 
 <details>
-<summary><strong>Polyglot (Python + Rust) project</strong></summary>
+<summary><strong>Monorepo with an out-of-sync lockfile — <code>documenso/documenso</code> (real run → recovers → READY)</strong></summary>
 
 ```
-  devhelp · DRY RUN
-  › get this going
+  devhelp
+  › documenso/documenso
 
-✔ Detected: python 3.12.4, rust stable
-✔ Installed Python 3.12.4
-✔ Installed Rust stable
-✔ Installed dependencies                 poetry install
-✔ Installed dependencies                 cargo build
+  ✔ Detected: Next.js, node 22.0.0, npm, turbo monorepo, prisma, playwright, devcontainer
+  ✔ Installed Node 22.0.0
+  ❯ Installing deps · npm ci (large monorepos can take a few minutes)
+  ✔ Installed · npm install        # npm ci rejected the lockfile — fell back automatically
 
-╭─────────────────────────────────────────────────╮
-│                                                 │
-│  READY                                          │
-│                                                 │
-│    cd ./my-project                              │
-│    pytest      # tests                          │
-│                                                 │
-╰─────────────────────────────────────────────────╯
+╭───────────── Next.js ─────────────╮
+│                                   │
+│  READY                            │
+│    ! npm ci rejected the          │
+│      committed lockfile (out of   │
+│      sync); fell back to          │
+│      "npm install"                │
+│                                   │
+╰───────────────────────────────────╯
+  Full log: ~/.devhelp/runs/<timestamp>.json
 ```
+
+<sub>(documenso's committed lockfile is out of sync with its `package.json`, so the strict `npm ci` aborts. Rather than dead-end, devhelp falls back to `npm install` once and tells you it did — reaching a working install without hiding the lockfile drift.)</sub>
 
 </details>
 
+## When it can't finish
+
+devhelp never fakes a green panel. Every run ends in one of four explicit states:
+
+- **`READY`** — everything worked; the panel shows the `cd` / `dev` / `test` commands and the real dev URL.
+- **`INCOMPLETE`** (exit 1) — a critical step failed. The panel breaks each failure into **what** failed, **why** (the real cause line pulled from the output, not a generic "exit 1"), and a concrete **fix** — a matched remediation, a stack-specific hint, or the exact command to re-run. It never dead-ends on "check the log."
+- **`UNSUPPORTED`** (exit 1) — the stack isn't recognized; you get a link to file a support request instead of a wrong guess.
+- **`INFORM`** — recognized, but auto-install isn't safe (C/C++, Nix, Terraform…); the panel explains what to install by hand.
+
+Every run also writes a full JSON record to `~/.devhelp/runs/<timestamp>.json` (the last 100 are kept) and prints its path at the end. That log has the detected stack, every step run, and the captured failure output — enough to reproduce a failure without guessing.
+
+**Help it improve:** hit a repo devhelp gets wrong? [Open an issue](https://github.com/sshivanshg/devhelp/issues) and attach the run-log JSON. Maintainers can also commit a [`.devhelp.yml`](./src/recipe.ts) to their repo declaring repo-specific steps (`postInstall:` commands plus `dev` / `test` / `build` overrides) so devhelp sets their project up out of the box.
+
+See the [**FAQ & known limitations**](./docs/FAQ.md) for common failures (and what each means), the slow-step explanations, and the honest scope of what's verified vs. best-effort.
+
 ## Security / trust model
 
-devhelp clones and sets up arbitrary repositories, so it's worth being explicit about what that means:
+devhelp clones and sets up arbitrary repositories, so it's worth being explicit about what that means. **The short version: running devhelp on a repo is as trusting as cloning it and running `npm install` / `make` yourself — because that's literally what it does.** Don't point it at code you wouldn't run by hand.
 
 - **Running install commands runs the repo's code.** `npm install`, `cargo build`, `bundle install`, etc. execute the project's own post-install/build scripts *by design*. devhelp does not sandbox them. Only run it on repos you'd be willing to `npm install` by hand.
 - **Version strings from manifests are validated before use.** Values like `.python-version`, `rust-toolchain`, and `.tool-versions` entries are read from the (untrusted) repo and would otherwise be interpolated into shell commands. devhelp rejects any version/toolchain value containing shell metacharacters and refuses to install rather than run it — closing a shell-injection vector.
@@ -315,7 +343,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 Every developer loses hours a week to environment setup. Most of those hours go to problems with **deterministic answers** — wrong Node version, missing system lib, lockfile/manager mismatch, forgot to copy `.env.example`, forgot to `prisma generate`. There's no reason a tool can't just fix them.
 
-devhelp keeps that path fast, free, and fully deterministic — no LLM, no API keys, no surprises.
+devhelp keeps that path fast, free, and fully deterministic — no LLM, no API keys, no telemetry, no surprises.
 
 The thing we measure ourselves on is: *did the user run our command, and did `pnpm dev` actually work afterwards?* If no, that's a failure pattern we want documented in [`stress-test/FAILURE_PATTERNS.md`](./stress-test/FAILURE_PATTERNS.md). The receipts matter more than the marketing.
 

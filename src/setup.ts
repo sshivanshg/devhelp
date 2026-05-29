@@ -32,7 +32,7 @@ import { verifyTests, verifyDevServer, type VerifyCheck } from "./verify.js";
 import { writeVscodeLaunch } from "./vscode.js";
 import { detectSecretsProvider, secretsCommand } from "./secrets.js";
 
-export interface OfflineOptions {
+export interface SetupOptions {
   request: string;
   cwd: string;
   dryRun: boolean;
@@ -68,7 +68,7 @@ interface PlaybookCtx {
   detected?: Detected;
   done: string[];
   warnings: string[];
-  failedSteps: { name: string; error: string; recovery?: string }[];
+  failedSteps: { name: string; error: string; cause?: string; command?: string; recovery?: string }[];
   criticalStepFailed: boolean;
   nothingDetected: boolean;
   // Whether <projectDir>/.env existed before the run started. Snapshotted up
@@ -77,7 +77,7 @@ interface PlaybookCtx {
   envPreexisted: boolean;
 }
 
-export async function runOffline(opts: OfflineOptions): Promise<number> {
+export async function runSetup(opts: SetupOptions): Promise<number> {
   if (!opts.json) printBanner(opts);
 
   const ctx: PlaybookCtx = {
@@ -225,13 +225,24 @@ export async function runOffline(opts: OfflineOptions): Promise<number> {
     candidates.push({ title: `Android SDK check`, run: (c, task) => androidSdkCheck(c, task) });
   }
   for (const cmd of d.installCommands) {
+    const note = slowStepNote("deps", d.monorepo);
     candidates.push({
-      title: `Installing deps · ${cmd}`,
+      title: note ? `Installing deps · ${cmd} (${note})` : `Installing deps · ${cmd}`,
       critical: true,
       run: async (c, task) => {
-        await runShell(wrapForRuntime(cmd, c.detected!), c.projectDir, c, task);
-        task.title = `Installed · ${cmd}`;
-        c.done.push(cmd);
+        let ran = cmd;
+        try {
+          await runShell(wrapForRuntime(cmd, c.detected!), c.projectDir, c, task);
+        } catch (e) {
+          const alt = npmCiFallback(cmd, e instanceof Error ? e.message : String(e));
+          if (!alt) throw e;
+          c.warnings.push(`npm ci rejected the committed lockfile (out of sync); fell back to "${alt}"`);
+          task.title = `Installing deps · ${alt} (npm ci rejected the lockfile — retrying)`;
+          await runShell(wrapForRuntime(alt, c.detected!), c.projectDir, c, task);
+          ran = alt;
+        }
+        task.title = `Installed · ${ran}`;
+        c.done.push(ran);
       },
     });
   }
@@ -490,8 +501,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<number> {
   }
 
   const notes: string[] = [];
-  if (d.dockerComposeFiles.length)
-    notes.push(`services: docker compose up -d  (${d.dockerComposeFiles.slice(0, 2).join(", ")})`);
+  if (d.serviceComposeFiles.length)
+    notes.push(`services: docker compose up -d  (${d.serviceComposeFiles.slice(0, 2).join(", ")})`);
   if (d.envTemplates.length) notes.push(`env: copy ${d.envTemplates.length} template(s) → .env`);
   if (d.prismaSchemas.length) notes.push(`prisma: ${d.prismaSchemas.length} schema(s) to generate`);
   if (notes.length) {
@@ -513,10 +524,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<number> {
   return problems ? 1 : 0;
 }
 
-function computeStatus(ctx: PlaybookCtx): RunLogPayload["status"] {
+export function computeStatus(ctx: PlaybookCtx): RunLogPayload["status"] {
+  if (ctx.criticalStepFailed) return "INCOMPLETE";
   if (ctx.detected?.informOnly) return "INFORM";
   if (ctx.nothingDetected) return "UNSUPPORTED";
-  if (ctx.criticalStepFailed) return "INCOMPLETE";
   return "READY";
 }
 
@@ -572,9 +583,12 @@ function critical(
       const err = lastError instanceof Error ? lastError.message : String(lastError);
       c.criticalStepFailed = true;
       const finalMatch = findRecovery(err);
+      const { command, cause } = summarizeFailure(err);
       c.failedSteps.push({
         name: stepName,
-        error: firstLine(err),
+        error: cause,
+        cause: finalMatch?.cause,
+        command,
         recovery: finalMatch?.remediation,
       });
       throw lastError;
@@ -608,6 +622,119 @@ async function attemptAutoFix(
 
 function firstLine(s: string): string {
   return s.split("\n").find((l) => l.trim().length > 0) ?? s;
+}
+
+/**
+ * Pull the useful bits out of a thrown step error. runShell formats failures as
+ *   Command failed (exit N):
+ *   $ <command>
+ *   <tail of stdout/stderr>
+ * so the bare first line ("Command failed…") is noise. We recover the failing
+ * command (to offer a re-run) and the most informative tail line (the actual
+ * cause — an error/refused/not-found line, else the last non-empty line).
+ */
+export function summarizeFailure(raw: string): { command?: string; cause: string } {
+  const lines = raw.split("\n").map(stripAnsi);
+  const cmdLine = lines.find((l) => l.startsWith("$ "));
+  const command = cmdLine ? unwrapRuntime(cmdLine.slice(2).trim()) : undefined;
+
+  // The reason the runner recorded — "exit 1", "timed out after 10m", etc.
+  const reason = lines.find((l) => /^Command failed \(/.test(l))?.match(/^Command failed \((.+)\):/)?.[1];
+
+  const body = lines
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l &&
+        !l.startsWith("$ ") &&
+        !/^Command failed \(/.test(l) &&
+        // Drop progress/log noise — it's never the real cause and crowds out the error.
+        !/^(Downloading|Downloaded|Fetching|Resolving|Building|Built|Compiling|Installing|Updating|Prepared|Audited|Progress|info |npm warn|warning|remote:|Receiving|Counting|Compressing|Unpacking|\d+%|[─-▟⠀-⣿])/i.test(
+          l,
+        ),
+    );
+  // Prefer a line that names a concrete cause over a bare error code/banner.
+  const strong = body.find((l) =>
+    /\b(cannot|can't|refused|not found|no such|denied|fatal|unreachable|conflict|already in use|timed out|P\d{4})\b/i.test(
+      l,
+    ),
+  );
+  const weak = body.find((l) => /\b(error|err!|failed|E[A-Z]{2,})\b/.test(l));
+  // reason ("timed out after 10m", "exit 1") only as a last resort — when the
+  // output carried no real content, just progress noise we filtered away.
+  const cause = strong ?? weak ?? body[body.length - 1] ?? reason ?? firstLine(stripAnsi(raw));
+  return { command, cause };
+}
+
+/** Remove ANSI SGR/color escapes so captured output is plain text. */
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
+ * Render a fatal error (one thrown outside the step framework — a failed clone,
+ * the security gate) with the same what/why/fix discipline as the INCOMPLETE
+ * panel, instead of dumping the raw multi-page error (e.g. git's progress spam)
+ * to stderr. Always actionable. Used by the CLI's top-level catch.
+ */
+export function formatFatalError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const { cause, command } = summarizeFailure(raw);
+  const match = findRecovery(raw);
+  const lines = [
+    chalk.red.bold("devhelp couldn't finish"),
+    "",
+    chalk.red(`  ✗ ${truncate(match?.cause ?? cause, 120)}`),
+  ];
+  if (match?.remediation) lines.push(chalk.yellow(`  fix:  ${match.remediation}`));
+  else if (command) lines.push(chalk.yellow(`  fix:  Re-run to see the full error:  ${truncate(command, 100)}`));
+  else lines.push(chalk.yellow(`  fix:  Double-check the repo name/URL and your network, then re-run`));
+  return lines.join("\n");
+}
+
+/**
+ * Strip the nvm/runtime preamble wrapForRuntime prepends, leaving the real
+ * command a user would actually re-run (e.g. `npm ci`, not the `export NVM_DIR…
+ * nvm use…;` shell dance). No-op for commands that weren't wrapped.
+ */
+function unwrapRuntime(command: string): string {
+  const m = command.match(/nvm\.sh.*?;\s*(.+)$/s);
+  return m ? m[1].trim() : command;
+}
+
+/**
+ * A short, honest "this is meant to take a while" note for steps that run for
+ * minutes with little or no output. Without it the silence reads as a hang and
+ * a first-time user Ctrl-Cs mid-compile. We don't fabricate ETAs — just name
+ * what's happening and that it's slow. Returns "" when there's nothing worth
+ * warning about (e.g. a small single-package install finishes quickly).
+ */
+export function slowStepNote(kind: "node" | "python" | "deps", monorepo?: string): string {
+  switch (kind) {
+    case "node":
+      return "downloading Node…";
+    case "python":
+      return "compiling from source — can take several minutes";
+    case "deps":
+      return monorepo ? "large monorepos can take a few minutes" : "";
+  }
+}
+
+/**
+ * `npm ci` is strict: it aborts (EUSAGE) when the committed package-lock.json is
+ * out of sync with package.json, or absent. For onboarding, reaching a working
+ * install matters more than lockfile purity, so fall back to `npm install` once.
+ * Returns the fallback command, or null when the failure isn't a recoverable
+ * `npm ci` lockfile problem (the caller then rethrows). Only `npm ci` qualifies —
+ * pnpm/yarn/bun installs are left to fail honestly.
+ */
+export function npmCiFallback(cmd: string, errorMessage: string): string | null {
+  if (!/^npm ci\b/.test(cmd)) return null;
+  const lockfileTrouble =
+    /EUSAGE|can only install|out of sync|Missing: .* from lock file|Invalid: .* lock file|lock file('s)? .* (?:does not|doesn't) (?:match|satisfy)/i;
+  if (!lockfileTrouble.test(errorMessage)) return null;
+  return cmd.replace(/^npm ci\b/, "npm install");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -681,18 +808,33 @@ async function runCloneStep(ctx: PlaybookCtx): Promise<void> {
   }
   if (ctx.dryRun) {
     // Clone shallowly so detection sees the real manifests and the plan is
-    // accurate; the clone is removed before runOffline returns. Cloning is the
+    // accurate; the clone is removed before runSetup returns. Cloning is the
     // only read-only-from-the-remote way to know what we'd do.
     try {
       await cloneWithProgress(ctx, repo.url, dest, chalk.dim(`[dry-run] cloning ${repo.url} to inspect`), ["--depth", "1"]);
       ctx.dryRunTempClone = dest;
-    } catch {
-      say(ctx, chalk.dim(`  ↪ [dry-run] clone failed — plan limited to what's knowable offline`));
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      const match = findRecovery(err);
+      const { command, cause } = summarizeFailure(err);
+      ctx.criticalStepFailed = true;
+      ctx.failedSteps.push({
+        name: "Clone repository",
+        error: cause,
+        cause: match?.cause,
+        command,
+        recovery: match?.remediation,
+      });
+      say(ctx, chalk.dim(`  ↪ [dry-run] clone failed — plan limited to what's knowable without cloning`));
     }
     ctx.projectDir = dest;
     return;
   }
-  await cloneWithProgress(ctx, repo.url, dest, chalk.cyan(`Cloning ${repo.url}`));
+  // Shallow clone: onboarding needs a working tree, not full history. This is
+  // dramatically faster on large repos and avoids the HTTP/2 pack-transfer
+  // disconnects (curl 92) that full clones of huge repos hit. Contributors can
+  // `git fetch --unshallow` if they later need history.
+  await cloneWithProgress(ctx, repo.url, dest, chalk.cyan(`Cloning ${repo.url}`), ["--depth", "1"]);
   ctx.projectDir = dest;
   ctx.cloned = true;
   ctx.done.push(`cloned ${repo.url}`);
@@ -724,6 +866,17 @@ async function cloneWithProgress(
     },
   });
   try {
+    await git.clone(url, dest, cloneArgs);
+  } catch (e) {
+    // Transient mid-transfer disconnects (curl 56/92, early EOF, RPC failed) are
+    // common on large repos and almost always succeed on a second try. Since the
+    // clone is shallow, one automatic retry is cheap and saves the user a manual
+    // re-run. Non-network failures (bad URL, auth, no such repo) are not retried.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (findRecovery(msg)?.ruleId !== "network-unreachable") throw e;
+    await fs.rm(dest, { recursive: true, force: true }); // drop the partial clone
+    if (spinner) spinner.text = `${label} · network hiccup, retrying once`;
+    else say(ctx, chalk.dim("  ↪ network hiccup, retrying clone once"));
     await git.clone(url, dest, cloneArgs);
   } finally {
     spinner?.stop();
@@ -764,7 +917,7 @@ async function installNode(version: string, ctx: PlaybookCtx, task: any): Promis
       task,
     );
   }
-  task.title = `Installing Node ${version}`;
+  task.title = `Installing Node ${version} (${slowStepNote("node")})`;
   // Quote the version: tokens like "lts/*" are glob-expanded by zsh (the macOS
   // default), which errors with "no matches found" before nvm ever sees them.
   await runShell(
@@ -796,8 +949,10 @@ async function installPython(version: string, ctx: PlaybookCtx, task: any): Prom
         : "curl -fsSL https://pyenv.run | bash";
     await runShell(cmd, ctx.projectDir, ctx, task);
   }
-  task.title = `Installing Python ${version}`;
-  await runShell(`pyenv install -s ${version}`, ctx.projectDir, ctx, task);
+  task.title = `Installing Python ${version} (${slowStepNote("python")})`;
+  // Prefix with PYENV_PREAMBLE: pyenv.run just installed to $PYENV_ROOT/bin,
+  // which isn't on PATH in this fresh shell, so a bare `pyenv install` 404s.
+  await runShell(pyenvExec(`pyenv install -s ${version}`), ctx.projectDir, ctx, task);
   task.title = `Installed Python ${version}`;
   ctx.done.push(`python ${version}`);
 }
@@ -894,7 +1049,7 @@ async function detectCompose(): Promise<{ base: string; wait: boolean } | null> 
 }
 
 async function startServices(ctx: PlaybookCtx, task: any): Promise<void> {
-  const files = ctx.detected!.dockerComposeFiles;
+  const files = ctx.detected!.serviceComposeFiles;
   // Skip the probe in dry-run; just display the v2 form.
   const compose = ctx.dryRun ? { base: "docker compose", wait: true } : await detectCompose();
   if (!compose) {
@@ -916,7 +1071,12 @@ async function startServices(ctx: PlaybookCtx, task: any): Promise<void> {
 async function prismaGenerate(ctx: PlaybookCtx, task: any): Promise<void> {
   const pm = ctx.detected!.pkgManager ?? "npm";
   for (const schema of ctx.detected!.prismaSchemas) {
-    const cmd = `${pmExec(pm)} prisma generate --schema ${schema}`;
+    // Absolute path: in monorepos where a nested workspace package.json also
+    // carries a `prisma` field, Prisma resolves a relative `--schema` against
+    // that package's dir instead of the repo root and reports "file not found".
+    // An absolute path sidesteps the base-dir ambiguity (notably under yarn berry).
+    const schemaPath = path.resolve(ctx.projectDir, schema);
+    const cmd = `${pmExec(pm)} prisma generate --schema ${schemaPath}`;
     task.title = `prisma generate (${schema})`;
     await runShell(wrapForRuntime(cmd, ctx.detected!), ctx.projectDir, ctx, task);
   }
@@ -930,9 +1090,10 @@ async function dbProvision(ctx: PlaybookCtx, task: any): Promise<void> {
   // `migrate deploy` applies committed migrations only — it never resets or
   // generates new ones, so it's safe to run unattended (unlike `migrate dev`).
   for (const schema of d.prismaSchemas) {
+    const schemaPath = path.resolve(ctx.projectDir, schema);
     task.title = `prisma migrate deploy (${schema})`;
     await runShell(
-      wrapForRuntime(`${pmExec(pm)} prisma migrate deploy --schema ${schema}`, d),
+      wrapForRuntime(`${pmExec(pm)} prisma migrate deploy --schema ${schemaPath}`, d),
       ctx.projectDir,
       ctx,
       task,
@@ -1026,9 +1187,10 @@ async function runShell(
   // Falls back to /bin/bash on POSIX; on native Windows without a bash shell
   // the up-front guard has already warned, but try "bash" (git-bash) anyway.
   const shell = pickShell() ?? "bash";
+  const TIMEOUT_MS = 10 * 60 * 1000;
   const sub = execa(shell, ["-lc", command], {
     cwd,
-    timeout: 10 * 60 * 1000,
+    timeout: TIMEOUT_MS,
     env: { ...process.env, FORCE_COLOR: "0", CI: "1" },
     reject: false,
     all: true,
@@ -1041,8 +1203,17 @@ async function runShell(
   }
   const result = await sub;
   if (result.exitCode !== 0) {
-    const tail = (result.all ?? result.stderr ?? "").toString().split("\n").slice(-12).join("\n");
-    throw new Error(`Command failed (exit ${result.exitCode}):\n$ ${command}\n${tail}`);
+    // Distinguish a real non-zero exit from a process we killed (timeout) or one
+    // killed by signal — "exit undefined" tells the user nothing.
+    const reason = result.timedOut
+      ? `timed out after ${Math.round(TIMEOUT_MS / 60000)}m`
+      : result.signal
+        ? `killed by ${result.signal}`
+        : `exit ${result.exitCode ?? "unknown"}`;
+    // Keep a generous tail: noisy installers (uv, pnpm) emit pages of progress,
+    // and the real error must survive the truncation for summarizeFailure to find it.
+    const tail = (result.all ?? result.stderr ?? "").toString().split("\n").slice(-25).join("\n");
+    throw new Error(`Command failed (${reason}):\n$ ${command}\n${tail}`);
   }
   if (successMsg) ctx.done.push(successMsg);
 }
@@ -1051,10 +1222,80 @@ export function wrapForRuntime(command: string, d: Detected): string {
   if (d.nodeVersion && /^(npm|pnpm|yarn|bun|npx)\b/.test(command)) {
     return nvmWrap(
       // Quoted so zsh doesn't glob-expand version tokens like "lts/*".
-      `nvm use "${d.nodeVersion}" >/dev/null 2>&1 || nvm use default >/dev/null 2>&1; ${command}`,
+      `nvm use "${d.nodeVersion}" >/dev/null 2>&1 || nvm use default >/dev/null 2>&1; ${ensurePmPrefix(command)}${command}`,
     );
   }
+  // Bare python/pip in the venv-bootstrap path: the interactive shell's pyenv
+  // init isn't loaded in the non-interactive login shell we spawn, so the
+  // pyenv-installed interpreter isn't on PATH (and macOS ships no `python`).
+  if (d.pythonVersion && /^(python3?|pip3?|pipenv|uv|poetry)\b/.test(command)) {
+    return pyenvWrap(`${ensurePythonToolPrefix(command)}${command}`, d.pythonVersion);
+  }
   return command;
+}
+
+/**
+ * pnpm/yarn aren't installed just because Node is — on a clean machine a freshly
+ * nvm-installed Node has only npm/npx, so `pnpm install` dies with "command not
+ * found". We install the missing manager globally with npm (always present with
+ * Node). We deliberately do NOT use corepack: its bundled version does online
+ * release-signature verification that crashes on some Node builds/networks
+ * (`verifySignature`/`fetchLatestStableVersion`) — too fragile for a tool that
+ * must work on arbitrary machines. Only fires for pnpm/yarn when absent, so an
+ * existing global install is left untouched. npm/npx need nothing (npm ships
+ * with Node); bun has its own install path. Returns a prefix, or "" if not needed.
+ */
+function ensurePmPrefix(command: string): string {
+  const m = command.match(/^(pnpm|yarn)\b/);
+  if (!m) return "";
+  const pm = m[1];
+  return `command -v ${pm} >/dev/null 2>&1 || npm install -g ${pm} >/dev/null 2>&1 || true; `;
+}
+
+/**
+ * uv/poetry/pipenv are project-level Python package managers, not guaranteed
+ * to exist on a clean machine after Python itself is installed. Install the
+ * missing CLI into the user site and expose ~/.local/bin for this shell only.
+ */
+function ensurePythonToolPrefix(command: string): string {
+  const m = command.match(/^(uv|poetry|pipenv)\b/);
+  if (!m) return "";
+  const tool = m[1];
+  return `export PATH="$HOME/.local/bin:$PATH"; command -v ${tool} >/dev/null 2>&1 || python3 -m pip install --user ${tool}; `;
+}
+
+/**
+ * Put a freshly-installed pyenv on PATH and initialize it. pyenv.run installs to
+ * $PYENV_ROOT/bin, which isn't on PATH in the next (fresh) shell — so a bare
+ * `pyenv install` right after install dies with "command not found". This
+ * preamble fixes that and is a harmless no-op when pyenv is already on PATH
+ * (e.g. brew-installed) or absent (mise/asdf user).
+ */
+const PYENV_PREAMBLE =
+  'export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"; ' +
+  '[ -d "$PYENV_ROOT/bin" ] && export PATH="$PYENV_ROOT/bin:$PATH"; ' +
+  'command -v pyenv >/dev/null 2>&1 && eval "$(pyenv init - 2>/dev/null)";';
+
+/** A pyenv command (e.g. `pyenv install -s 3.11`) with pyenv guaranteed on PATH. */
+function pyenvExec(cmd: string): string {
+  return `${PYENV_PREAMBLE} ${cmd}`;
+}
+
+/**
+ * Make the pyenv-installed interpreter usable as `python3`/`python` in the
+ * non-interactive shell, and pin the highest installed version matching the
+ * detected line (e.g. "3.11" → "3.11.15"). If pyenv isn't the manager (mise/asdf
+ * user) the preamble is a no-op and the command falls back to the login shell's
+ * own python3.
+ */
+function pyenvWrap(inner: string, version: string): string {
+  const prefix = version.replace(/\./g, "\\.");
+  return [
+    PYENV_PREAMBLE,
+    `__dhpy="$(pyenv versions --bare 2>/dev/null | grep -E '^${prefix}(\\.|$)' | tail -1)"; ` +
+      '[ -n "$__dhpy" ] && export PYENV_VERSION="$__dhpy";',
+    inner,
+  ].join(" ");
 }
 
 function nvmWrap(inner: string): string {
@@ -1211,7 +1452,7 @@ function truncate(s: string, n: number): string {
 /* Banner + summary                                                            */
 /* -------------------------------------------------------------------------- */
 
-function printBanner(opts: OfflineOptions): void {
+function printBanner(opts: SetupOptions): void {
   console.log();
   console.log(
     chalk.cyan.bold("  devhelp"),
@@ -1228,12 +1469,12 @@ function printSummary(ctx: PlaybookCtx): number {
     printInformPanel(ctx);
     return 0;
   }
-  if (ctx.nothingDetected) {
-    printUnsupportedPanel(ctx);
-    return 1;
-  }
   if (ctx.criticalStepFailed) {
     printIncompletePanel(ctx);
+    return 1;
+  }
+  if (ctx.nothingDetected) {
+    printUnsupportedPanel(ctx);
     return 1;
   }
   printReadyPanel(ctx);
@@ -1302,20 +1543,16 @@ function printIncompletePanel(ctx: PlaybookCtx): void {
   const d = ctx.detected;
   const lines: string[] = [];
   lines.push(chalk.red.bold("INCOMPLETE"));
-  lines.push("");
-  lines.push("Some steps failed:");
+  lines.push(chalk.dim(`  ${ctx.failedSteps.length} step(s) need a hand — here's what and how:`));
+  // One block per failure: what failed → why → the exact next move. Grouping
+  // cause and remedy under each step (rather than two separate lists) keeps the
+  // mapping unambiguous when more than one step fails.
   for (const f of ctx.failedSteps) {
+    lines.push("");
     lines.push(chalk.red(`  ✗ ${f.name}`));
-    lines.push(chalk.dim(`    ${truncate(f.error, 80)}`));
-  }
-  lines.push("");
-  lines.push(chalk.bold("What to try:"));
-  for (const f of ctx.failedSteps) {
-    if (f.recovery) {
-      lines.push(chalk.yellow(`  Likely fix: ${f.recovery}`));
-    } else {
-      lines.push(chalk.dim(`  ${hintFor(f.name, d)}`));
-    }
+    if (f.cause) lines.push(chalk.dim(`    why:  ${f.cause}`));
+    else lines.push(chalk.dim(`    why:  ${truncate(f.error, 100)}`));
+    for (const step of remedyFor(f, d)) lines.push(chalk.yellow(`    fix:  ${step}`));
   }
   console.log();
   console.log(
@@ -1330,7 +1567,32 @@ function printIncompletePanel(ctx: PlaybookCtx): void {
   console.log();
 }
 
-function hintFor(stepName: string, d: Detected | undefined): string {
+/**
+ * The concrete next action(s) for a failed step. Always returns at least one
+ * actionable line — never a "check the log" dead-end. Priority: a matched
+ * recovery remediation → a stack-specific hint → re-run the exact command that
+ * failed (so the user sees the full error in context).
+ */
+function remedyFor(
+  f: PlaybookCtx["failedSteps"][number],
+  d: Detected | undefined,
+): string[] {
+  const out: string[] = [];
+  if (f.recovery) out.push(f.recovery);
+  const hint = hintFor(f.name, d);
+  if (hint && hint !== f.recovery) out.push(hint);
+  if (!out.length) {
+    out.push(
+      f.command
+        ? `Re-run to see the full error:  ${truncate(f.command, 100)}`
+        : "Open the run log below for the full output",
+    );
+  }
+  return out;
+}
+
+/** Stack-specific hint keyed off the step name, or null when none applies. */
+function hintFor(stepName: string, d: Detected | undefined): string | null {
   const lower = stepName.toLowerCase();
   if (lower.includes("node")) return `Install Node manually from https://nodejs.org or via nvm`;
   if (lower.includes("python"))
@@ -1339,11 +1601,9 @@ function hintFor(stepName: string, d: Detected | undefined): string {
   if (lower.includes("go")) return `Install Go manually from https://go.dev/dl/`;
   if (lower.includes("dependencies"))
     return `Run "${d?.installCommands[0] ?? "install"}" manually to see the full error`;
-  if (lower.includes("prisma"))
-    return `Run npx prisma generate manually after setting DATABASE_URL`;
   if (lower.includes("submodule"))
     return `Run "git submodule update --init --recursive" manually`;
-  return "Check the log above for details";
+  return null;
 }
 
 function printReadyPanel(ctx: PlaybookCtx): void {
@@ -1374,16 +1634,22 @@ function printReadyPanel(ctx: PlaybookCtx): void {
     lines.push(chalk.cyan(`  ${truncate(d.devcontainerSetupCommand, 80)}`));
   }
 
-  if (d.dockerComposeFiles.length) {
+  if (d.serviceComposeFiles.length) {
+    // Bare `docker compose up -d` only targets ./docker-compose.yml, which may be
+    // the full-stack/app compose rather than the service deps. Name files with -f
+    // unless the single service compose IS the default root one.
+    const composeCmd = (f: string) =>
+      f === "docker-compose.yml" || f === "compose.yml" ? "docker compose up -d" : `docker compose -f ${f} up -d`;
     lines.push("");
     if (ctx.withServices) {
       lines.push(chalk.dim("  Services (already started via docker compose):"));
-      lines.push(chalk.dim(`  (${d.dockerComposeFiles.slice(0, 3).join(", ")}${d.dockerComposeFiles.length > 3 ? "…" : ""})`));
+      lines.push(chalk.dim(`  (${d.serviceComposeFiles.slice(0, 3).join(", ")}${d.serviceComposeFiles.length > 3 ? "…" : ""})`));
       lines.push(chalk.dim("  Stop with: docker compose down"));
     } else {
       lines.push(chalk.dim("  Before starting:"));
-      lines.push(chalk.cyan("  docker compose up -d") + chalk.dim("       # starts services (Postgres, Redis, etc.)"));
-      lines.push(chalk.dim(`  (found: ${d.dockerComposeFiles.slice(0, 3).join(", ")}${d.dockerComposeFiles.length > 3 ? "…" : ""})`));
+      for (const f of d.serviceComposeFiles.slice(0, 3)) {
+        lines.push(chalk.cyan(`  ${composeCmd(f)}`) + chalk.dim("   # starts services (Postgres, Redis, etc.)"));
+      }
       if (d.envHasLocalDb) {
         lines.push(chalk.yellow("  ! DATABASE_URL points at localhost — make sure the service is running"));
       }

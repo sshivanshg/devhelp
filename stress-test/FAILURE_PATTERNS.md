@@ -19,7 +19,7 @@ A separate real-install run on `tiangolo/fastapi` (logged at `/tmp/devhelp-trial
 
 **Failure step:** none — finishes "successfully" anyway.
 
-**Root cause:** `runOffline` always calls `printSummary` at the end. There is no concept of "I cannot help with this repo" or "a critical step failed". `listr2` is configured `exitOnError: false`, which is correct for letting later steps run, but we never inspect the resulting task statuses before printing READY.
+**Root cause:** The setup runner always called `printSummary` at the end. There was no concept of "I cannot help with this repo" or "a critical step failed". `listr2` was configured `exitOnError: false`, which is correct for letting later steps run, but we never inspected the resulting task statuses before printing READY.
 
 **User-visible failure:** The user sees green, then runs the suggested command and is confused when nothing works (neovim) or the command errors (fastapi after real install).
 
@@ -27,7 +27,7 @@ A separate real-install run on `tiangolo/fastapi` (logged at `/tmp/devhelp-trial
 - Track `criticalStepFailed` on `PlaybookCtx`. If detection returned `nothing recognized`, or any non-skip task failed, replace the green READY panel with an amber/red "INCOMPLETE" panel that lists what failed and what the user should do.
 - Detect "unsupported repo" explicitly: if `detect()` returns no runtimes, no installCommands, and no recognized framework, print a one-line "devhelp doesn't know this stack yet — file a playbook request" and exit non-zero.
 
-**Files:** `src/offline.ts:runOffline`, `src/offline.ts:printSummary`
+**Files:** `src/setup.ts:runSetup`, `src/setup.ts:printSummary`
 
 ---
 
@@ -116,7 +116,7 @@ Otherwise, mark the Node toolchain as *optional* and add it to a "you'll want th
 
 **Fix:** When the manifest only provides a range, look at the lockfile or `engines.node` minimum and resolve to that concrete version. Or warn: `engines.node is "^24" — installing latest 24.x.x. Add an .nvmrc for reproducibility.`
 
-**Files:** `src/versions.ts`, `src/offline.ts:installNode`
+**Files:** `src/versions.ts`, `src/setup.ts:installNode`
 
 ---
 
@@ -132,7 +132,7 @@ Otherwise, mark the Node toolchain as *optional* and add it to a "you'll want th
 - Add Go installer (via `gvm` or just instruct user to use `brew install go`).
 - For unsupported ecosystems, return early with a clear message: `devhelp doesn't know <ecosystem> yet. Found: <list of unrecognized manifest files>`.
 
-**Files:** `src/offline.ts` (new `installGo` task), `src/detect.ts` (track unrecognized manifests).
+**Files:** `src/setup.ts` (new `installGo` task), `src/detect.ts` (track unrecognized manifests).
 
 ---
 
@@ -191,7 +191,7 @@ Otherwise, mark the Node toolchain as *optional* and add it to a "you'll want th
 
 **Fix:** `listr2` `rendererOptions.collapseSubtasks` or filter skipped tasks from output unless `--verbose`.
 
-**Files:** `src/offline.ts:runOffline` (Listr options)
+**Files:** `src/setup.ts:runSetup` (Listr options)
 
 ---
 

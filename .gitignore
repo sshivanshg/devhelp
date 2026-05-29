@@ -12,5 +12,7 @@ stress-test/*
 !stress-test/SUMMARY.md
 !stress-test/FAILURE_PATTERNS.md
 !stress-test/RETEST_RESULTS.md
+!stress-test/container-sweep.sh
+!stress-test/with-services-smoke.sh
 overnight-log.md
 docs/trial-*.md

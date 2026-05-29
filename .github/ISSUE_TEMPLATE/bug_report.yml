@@ -21,6 +21,21 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: failure-panel
+    attributes:
+      label: The failure panel
+      description: Paste the full `INCOMPLETE` / `UNSUPPORTED` panel as printed — the what / why / fix block, not just the last line.
+      render: shell
+
+  - type: textarea
+    id: run-log
+    attributes:
+      label: Run-log JSON
+      description: |
+        Every run writes a full record to `~/.devhelp/runs/<timestamp>.json` and prints its path at the end. Open the newest one and paste its contents (or attach the file). It captures the detected stack, every step, and the real failure output — it's what makes the bug reproducible.
+      render: json
+
   - type: input
     id: os
     attributes:

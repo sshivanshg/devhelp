@@ -56,6 +56,16 @@ export function normalizeNodeVersion(spec: string): string {
   return t;
 }
 
+/** Normalize Gemfile ruby version requirements to an installable token. */
+export function normalizeRubyVersion(spec: string): string {
+  const t = spec.trim().replace(/^v/, "");
+  const lowerBound = t.match(/>=?\s*v?(\d+(?:\.\d+){0,2})/);
+  if (lowerBound) return lowerBound[1];
+  const concrete = t.match(/^(\d+(?:\.\d+){0,2})/);
+  if (concrete) return concrete[1];
+  return t;
+}
+
 /**
  * A concrete runtime version / toolchain token that is safe to interpolate
  * into a shell command. These values originate in *untrusted* cloned
