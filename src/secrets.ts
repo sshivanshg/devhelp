@@ -11,6 +11,7 @@
  */
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
+import { shellQuote } from "./platform.js";
 
 export interface SecretsProvider {
   name: "1Password" | "Doppler";
@@ -51,8 +52,12 @@ export async function detectSecretsProvider(
 export function secretsCommand(provider: SecretsProvider): string {
   if (provider.name === "1Password") {
     // op inject resolves op:// refs from the template into a concrete .env.
-    return `op inject -i "${provider.template ?? ".env.example"}" -o .env`;
+    // The template path is repo-controlled, so quote it.
+    return `op inject -i ${shellQuote(provider.template ?? ".env.example")} -o .env`;
   }
-  // Doppler: write the project's resolved secrets into .env.
-  return `doppler secrets download --no-file --format env > .env`;
+  // Doppler: download to a temp file, then atomically move it into place. Piping
+  // straight to `.env` would truncate it the instant the shell opens the file,
+  // so a failed/partial download would leave a corrupt .env; the temp-then-mv
+  // dance keeps any existing .env intact unless the download fully succeeds.
+  return `doppler secrets download --no-file --format env > .env.devhelp.tmp && mv .env.devhelp.tmp .env`;
 }

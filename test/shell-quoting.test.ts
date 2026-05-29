@@ -74,3 +74,136 @@ describe("wrapForRuntime — python interpreter availability", () => {
     expect(wrapped).not.toContain("pip install --user pipenv");
   });
 });
+
+// Real-install regression: a runtime installed in one step lands in a location
+// the next fresh `bash -lc` doesn't have on PATH. These were only ever dry-run
+// tested, so the command-not-found failures never surfaced.
+describe("wrapForRuntime — runtime PATH for go/rust/ruby", () => {
+  it("puts /usr/local/go/bin on PATH for go commands (Linux clean-machine)", () => {
+    const d = { goVersion: "1.22" } as Detected;
+    const wrapped = wrapForRuntime("go mod download", d);
+    expect(wrapped).toContain("/usr/local/go/bin");
+    expect(wrapped).toContain("go mod download"); // original command preserved
+    // Guarded so it's a no-op when go is already on PATH (brew/macOS).
+    expect(wrapped).toContain("[ -d /usr/local/go/bin ]");
+  });
+
+  it("sources ~/.cargo/env for cargo commands", () => {
+    const d = { rustToolchain: "stable" } as Detected;
+    const wrapped = wrapForRuntime("cargo build", d);
+    expect(wrapped).toContain(".cargo/env");
+    expect(wrapped).toContain("cargo build");
+  });
+
+  it("initializes rbenv for ruby package-manager commands", () => {
+    const d = { rubyVersion: "3.3.0" } as Detected;
+    for (const cmd of ["bundle install", "gem install rails", "rake db:migrate"]) {
+      const wrapped = wrapForRuntime(cmd, d);
+      expect(wrapped).toContain("rbenv init -");
+      expect(wrapped).toContain(cmd);
+    }
+  });
+
+  it("puts ~/.bun/bin on PATH for bun commands (clean-machine, no Node)", () => {
+    // A bun-runtime project has no nodeVersion, so it never hit the nvm branch.
+    const wrapped = wrapForRuntime("bun install", { bunIsRuntime: true } as Detected);
+    expect(wrapped).toContain(".bun/bin");
+    expect(wrapped).toContain("bun install");
+    expect(wrapped).not.toContain("nvm use"); // bun is self-contained, no Node
+  });
+
+  it("puts ~/.deno/bin on PATH for deno commands", () => {
+    const wrapped = wrapForRuntime("deno cache", { denoVersion: "latest" } as Detected);
+    expect(wrapped).toContain(".deno/bin");
+    expect(wrapped).toContain("deno cache");
+  });
+
+  it("leaves commands untouched when the runtime isn't detected", () => {
+    expect(wrapForRuntime("go mod download", {} as Detected)).toBe("go mod download");
+    expect(wrapForRuntime("cargo build", {} as Detected)).toBe("cargo build");
+    expect(wrapForRuntime("bundle install", {} as Detected)).toBe("bundle install");
+    expect(wrapForRuntime("deno cache", {} as Detected)).toBe("deno cache");
+  });
+});
+
+// Same clean-machine PATH class for the best-effort ecosystems installed via
+// asdf / SDKMAN / Coursier / GHCup / dotnet-install / juliaup / opam, and Zig's
+// ~/.local/share unpack. Each was previously only dry-run swept, so a runtime
+// installed in one step but absent from the next fresh `bash -lc`'s PATH would
+// die with command-not-found. Each preamble is self-guarded — a no-op when the
+// tool is already on PATH (brew/macOS) or its manager isn't installed.
+describe("wrapForRuntime — PATH for best-effort ecosystems", () => {
+  it("exposes asdf shims for elixir mix commands", () => {
+    const d = { elixirVersion: "1.16" } as Detected;
+    for (const cmd of ["mix deps.get", "mix ecto.setup"]) {
+      const w = wrapForRuntime(cmd, d);
+      expect(w).toContain(".asdf/shims");
+      expect(w).toContain(cmd);
+    }
+  });
+
+  it("sources SDKMAN for maven/gradle (incl. ./ wrappers)", () => {
+    const d = { javaVersion: "21" } as Detected;
+    for (const cmd of ["mvn install -DskipTests", "./gradlew build", "./mvnw test", "gradle dependencies"]) {
+      const w = wrapForRuntime(cmd, d);
+      expect(w).toContain("sdkman-init.sh");
+      expect(w).toContain(cmd);
+    }
+  });
+
+  it("exposes coursier + a JVM for scala build tools", () => {
+    const d = { scalaVersion: "3.3" } as Detected;
+    const w = wrapForRuntime("./sbt compile", d);
+    expect(w).toContain("coursier/bin");
+    expect(w).toContain("sdkman-init.sh");
+    expect(w).toContain("./sbt compile");
+    expect(wrapForRuntime("mill _.compile", d)).toContain("coursier/bin");
+  });
+
+  it("sources ~/.ghcup/env for haskell stack/cabal", () => {
+    const d = { ghcVersion: "9.6" } as Detected;
+    for (const cmd of ["stack build", "cabal build"]) {
+      const w = wrapForRuntime(cmd, d);
+      expect(w).toContain(".ghcup/env");
+      expect(w).toContain(cmd);
+    }
+  });
+
+  it("puts ~/.dotnet on PATH (and sets DOTNET_ROOT) for dotnet", () => {
+    const w = wrapForRuntime("dotnet restore", { dotnetVersion: "8" } as Detected);
+    expect(w).toContain(".dotnet");
+    expect(w).toContain("DOTNET_ROOT");
+    expect(w).toContain("dotnet restore");
+  });
+
+  it("puts ~/.juliaup/bin on PATH for julia", () => {
+    const w = wrapForRuntime('julia --project=. -e "using Pkg; Pkg.instantiate()"', {
+      juliaVersion: "1.10",
+    } as Detected);
+    expect(w).toContain(".juliaup/bin");
+    expect(w).toContain("Pkg.instantiate");
+  });
+
+  it("runs opam env for ocaml dune/opam commands", () => {
+    const d = { ocamlVersion: "5.1" } as Detected;
+    for (const cmd of ["dune build", "opam install . --deps-only"]) {
+      const w = wrapForRuntime(cmd, d);
+      expect(w).toContain("opam env");
+      expect(w).toContain(cmd);
+    }
+  });
+
+  it("globs the zig install dir onto PATH for zig build", () => {
+    const w = wrapForRuntime("zig build", { zigVersion: "0.12" } as Detected);
+    expect(w).toContain(".local/share/zig-");
+    expect(w).toContain("zig build");
+  });
+
+  it("does not wrap these commands when the ecosystem isn't detected", () => {
+    expect(wrapForRuntime("mix deps.get", {} as Detected)).toBe("mix deps.get");
+    expect(wrapForRuntime("./gradlew build", {} as Detected)).toBe("./gradlew build");
+    expect(wrapForRuntime("stack build", {} as Detected)).toBe("stack build");
+    expect(wrapForRuntime("dotnet restore", {} as Detected)).toBe("dotnet restore");
+    expect(wrapForRuntime("zig build", {} as Detected)).toBe("zig build");
+  });
+});

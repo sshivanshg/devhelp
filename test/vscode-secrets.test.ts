@@ -36,10 +36,19 @@ describe("buildLaunchConfig", () => {
 describe("secretsCommand", () => {
   it("uses op inject for 1Password", () => {
     expect(secretsCommand({ name: "1Password", cli: "op", template: ".env.example" }))
-      .toBe('op inject -i ".env.example" -o .env');
+      .toBe("op inject -i .env.example -o .env");
   });
-  it("uses doppler download for Doppler", () => {
-    expect(secretsCommand({ name: "Doppler", cli: "doppler" })).toContain("doppler secrets download");
+  it("quotes a repo-controlled template path to block injection", () => {
+    const cmd = secretsCommand({ name: "1Password", cli: "op", template: "apps/$(touch pwned)/.env.example" });
+    // The metacharacters must be single-quoted, not left to expand.
+    expect(cmd).not.toContain("$(touch pwned)/.env.example -o");
+    expect(cmd).toContain("'apps/$(touch pwned)/.env.example'");
+  });
+  it("downloads Doppler to a temp file then moves it (never truncates .env on failure)", () => {
+    const cmd = secretsCommand({ name: "Doppler", cli: "doppler" });
+    expect(cmd).toContain("doppler secrets download");
+    expect(cmd).toMatch(/> \.env\.devhelp\.tmp && mv \.env\.devhelp\.tmp \.env/);
+    expect(cmd).not.toMatch(/>\s*\.env(?![.\w])/); // must not redirect straight onto .env
   });
 });
 

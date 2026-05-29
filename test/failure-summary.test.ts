@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { summarizeFailure, formatFatalError, computeStatus } from "../src/setup.js";
+import { summarizeFailure, formatFatalError, computeStatus, remedyFor } from "../src/setup.js";
+import type { Detected } from "../src/detect.js";
 // eslint-disable-next-line no-control-regex
 const noAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -92,5 +93,27 @@ describe("formatFatalError", () => {
 describe("computeStatus", () => {
   it("prioritizes a recorded critical failure over empty detection", () => {
     expect(computeStatus({ criticalStepFailed: true, nothingDetected: true } as any)).toBe("INCOMPLETE");
+  });
+});
+
+describe("remedyFor — step-name hints don't misfire on substrings", () => {
+  const d = { installCommands: ["cargo build"] } as Detected;
+
+  it("does not suggest installing Go for a failed `cargo build` (carGO substring)", () => {
+    const fixes = remedyFor({ name: "Installing deps · cargo build" } as any, d);
+    expect(fixes.join(" ")).not.toContain("go.dev"); // the old bug
+    // A deps failure means the runtime is fine — point at the install command.
+    expect(fixes.join(" ")).toContain("cargo build");
+  });
+
+  it("still gives the right runtime hint for a real runtime-install failure", () => {
+    expect(remedyFor({ name: "Installing Rust stable" } as any, undefined).join(" ")).toContain("rustup.rs");
+    expect(remedyFor({ name: "Installing Go (latest ≥ 1.22)" } as any, undefined).join(" ")).toContain("go.dev");
+    expect(remedyFor({ name: "Installing Node 20" } as any, undefined).join(" ")).toContain("nodejs.org");
+  });
+
+  it("prefers a matched recovery remediation when present", () => {
+    const fixes = remedyFor({ name: "Installing deps · npm ci", recovery: "Free up disk space" } as any, d);
+    expect(fixes[0]).toBe("Free up disk space");
   });
 });

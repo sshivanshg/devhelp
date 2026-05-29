@@ -14,6 +14,7 @@ import {
   systemInstallCommand,
   commandExistsProbe,
   pickShell,
+  shellQuote,
   WINDOWS_SHELL_HELP,
   type SystemDep,
 } from "./platform.js";
@@ -31,6 +32,7 @@ import { loadRecipe, type DevhelpRecipe } from "./recipe.js";
 import { verifyTests, verifyDevServer, type VerifyCheck } from "./verify.js";
 import { writeVscodeLaunch } from "./vscode.js";
 import { detectSecretsProvider, secretsCommand } from "./secrets.js";
+import { printBanner } from "./banner.js";
 
 export interface SetupOptions {
   request: string;
@@ -78,7 +80,7 @@ interface PlaybookCtx {
 }
 
 export async function runSetup(opts: SetupOptions): Promise<number> {
-  if (!opts.json) printBanner(opts);
+  if (!opts.json) await printBanner({ request: opts.request, dryRun: opts.dryRun });
 
   const ctx: PlaybookCtx = {
     request: opts.request,
@@ -791,7 +793,15 @@ function verifyLine(c: VerifyCheck): string {
 
 async function runCloneStep(ctx: PlaybookCtx): Promise<void> {
   const repo = extractRepo(ctx.request);
-  if (!repo) return;
+  if (!repo) {
+    // No repo in the request — fall back to setting up the current directory.
+    // Make this explicit so a typo'd repo name ("facbook/react") doesn't
+    // silently start mutating whatever directory the user happens to be in.
+    say(ctx, chalk.cyan("  ℹ"), chalk.bold("No repo in your request — setting up the current directory:"), prettyPath(ctx.cwd));
+    say(ctx, chalk.dim(`     To clone a repo instead, pass a URL or owner/repo, e.g. devhelp facebook/react`));
+    say(ctx, "");
+    return;
+  }
   // Archive check — only for GitHub URLs and only when we have owner/name on hand.
   if (repo.owner && repo.repo) {
     const archived = await checkGitHubArchived(repo.owner, repo.repo);
@@ -976,7 +986,18 @@ async function installRust(toolchain: string, ctx: PlaybookCtx, task: any): Prom
       task,
     );
   } else {
-    await runShell(`rustup toolchain install ${toolchain}`, ctx.projectDir, ctx, task);
+    // Install the toolchain AND pin it for this project. Without the override, a
+    // machine whose rustup has no default toolchain (e.g. installed with
+    // --default-toolchain none) fails the deps step with "rustup could not
+    // choose a version of cargo" even though the toolchain is present. The
+    // override is project-scoped (won't touch the user's global default) and is
+    // itself superseded by any rust-toolchain.toml the repo ships.
+    await runShell(
+      `rustup toolchain install ${toolchain} && rustup override set ${toolchain}`,
+      ctx.projectDir,
+      ctx,
+      task,
+    );
   }
   task.title = `Installed Rust ${toolchain}`;
   ctx.done.push(`rust ${toolchain}`);
@@ -992,11 +1013,23 @@ async function installGo(version: string, ctx: PlaybookCtx, task: any): Promise<
     task.title = `Installing Go ${version} via brew`;
     await runShell("brew install go || brew upgrade go", ctx.projectDir, ctx, task);
   } else if (os.platform() === "linux") {
-    const tarball = `go${version}.linux-amd64.tar.gz`;
-    task.title = `Installing Go ${version} (system)`;
+    task.title = `Installing Go (latest ≥ ${version})`;
+    // Install the latest stable Go rather than the go.mod `go` directive, which
+    // is a *minimum language version*, not a toolchain to pin: (1) Go is
+    // backward-compatible, so latest builds older code; (2) since Go 1.21 the
+    // first release of a minor is `go1.21.0`, so a `go1.22.linux-*.tar.gz` URL
+    // built from a bare `1.22` directive 404s; (3) old directives like `go 1.7`
+    // predate modules, so `go mod download` can't run. The macOS path already
+    // installs latest via brew — this keeps Linux consistent.
+    // Arch comes from the kernel (uname), not a hardcoded amd64, so arm64
+    // machines (Apple Silicon, Graviton, Pi) get a binary that actually runs.
+    // sudo only when not root: a root container/CI runner often has no `sudo`.
     await runShell(
-      `curl -fsSL -o /tmp/${tarball} https://go.dev/dl/${tarball} && ` +
-        `sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/${tarball}`,
+      `${GOARCH_DETECT} ${SUDO_IF_NEEDED} ` +
+        `GOVER="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"; ` +
+        `[ -n "$GOVER" ] || GOVER="go${version}"; ` +
+        `curl -fsSL -o /tmp/go-dl.tar.gz "https://go.dev/dl/\${GOVER}.linux-\${GOARCH}.tar.gz" && ` +
+        `$SUDO rm -rf /usr/local/go && $SUDO tar -C /usr/local -xzf /tmp/go-dl.tar.gz`,
       ctx.projectDir,
       ctx,
       task,
@@ -1008,8 +1041,10 @@ async function installGo(version: string, ctx: PlaybookCtx, task: any): Promise<
     task.title = `Go ${version} — install manually from https://go.dev/dl/`;
     return;
   }
-  task.title = `Installed Go ${version}`;
-  ctx.done.push(`go ${version}`);
+  // We install the latest stable Go (brew/Linux both do), which satisfies the
+  // repo's `go ${version}` floor — don't claim we installed that exact version.
+  task.title = `Installed Go (latest ≥ ${version})`;
+  ctx.done.push(`go (latest ≥ ${version})`);
 }
 
 async function setupEnv(ctx: PlaybookCtx, task: any): Promise<void> {
@@ -1041,7 +1076,9 @@ async function setupEnv(ctx: PlaybookCtx, task: any): Promise<void> {
 
 /** Build the compose "up" command. `--wait` is Compose v2 only (v1 lacks it). */
 export function composeUpCommand(base: string, file: string, wait: boolean): string {
-  return `${base} -f ${file} up -d${wait ? " --wait" : ""}`;
+  // `file` is a repo-relative path (incl. monorepo apps/<dir>/…), so a cloned
+  // repo controls it — quote it before it reaches the shell.
+  return `${base} -f ${shellQuote(file)} up -d${wait ? " --wait" : ""}`;
 }
 
 /**
@@ -1085,7 +1122,9 @@ async function prismaGenerate(ctx: PlaybookCtx, task: any): Promise<void> {
     // that package's dir instead of the repo root and reports "file not found".
     // An absolute path sidesteps the base-dir ambiguity (notably under yarn berry).
     const schemaPath = path.resolve(ctx.projectDir, schema);
-    const cmd = `${pmExec(pm)} prisma generate --schema ${schemaPath}`;
+    // schemaPath derives from a repo-controlled path (monorepo dir names), so
+    // quote it — an attacker-named dir must not inject into the shell.
+    const cmd = `${pmExec(pm)} prisma generate --schema ${shellQuote(schemaPath)}`;
     task.title = `prisma generate (${schema})`;
     await runShell(wrapForRuntime(cmd, ctx.detected!), ctx.projectDir, ctx, task);
   }
@@ -1102,7 +1141,7 @@ async function dbProvision(ctx: PlaybookCtx, task: any): Promise<void> {
     const schemaPath = path.resolve(ctx.projectDir, schema);
     task.title = `prisma migrate deploy (${schema})`;
     await runShell(
-      wrapForRuntime(`${pmExec(pm)} prisma migrate deploy --schema ${schemaPath}`, d),
+      wrapForRuntime(`${pmExec(pm)} prisma migrate deploy --schema ${shellQuote(schemaPath)}`, d),
       ctx.projectDir,
       ctx,
       task,
@@ -1228,11 +1267,21 @@ async function runShell(
 }
 
 export function wrapForRuntime(command: string, d: Detected): string {
-  if (d.nodeVersion && /^(npm|pnpm|yarn|bun|npx)\b/.test(command)) {
+  if (d.nodeVersion && /^(npm|pnpm|yarn|npx)\b/.test(command)) {
     return nvmWrap(
       // Quoted so zsh doesn't glob-expand version tokens like "lts/*".
       `nvm use "${d.nodeVersion}" >/dev/null 2>&1 || nvm use default >/dev/null 2>&1; ${ensurePmPrefix(command)}${command}`,
     );
+  }
+  // Bun's installer drops it in ~/.bun/bin and edits a shell rc the fresh login
+  // shell won't source — and a bun-runtime project has no Node, so it never hit
+  // the nvm branch above. Put bun on PATH directly; no-op when brew-installed.
+  if (/^bunx?\b/.test(command)) {
+    return `${BUN_PREAMBLE} ${command}`;
+  }
+  // Deno installs to ~/.deno/bin with the same not-on-PATH problem.
+  if (d.denoVersion && /^deno\b/.test(command)) {
+    return `${DENO_PREAMBLE} ${command}`;
   }
   // Bare python/pip in the venv-bootstrap path: the interactive shell's pyenv
   // init isn't loaded in the non-interactive login shell we spawn, so the
@@ -1240,8 +1289,138 @@ export function wrapForRuntime(command: string, d: Detected): string {
   if (d.pythonVersion && /^(python3?|pip3?|pipenv|uv|poetry)\b/.test(command)) {
     return pyenvWrap(`${ensurePythonToolPrefix(command)}${command}`, d.pythonVersion);
   }
+  // Go on Linux installs to /usr/local/go, which isn't on PATH in a fresh login
+  // shell (installGo only warns), so `go mod download` dies with "command not
+  // found". Prepend the bin dir; guarded so it's a no-op on brew/macOS installs
+  // where `go` is already on PATH.
+  if (d.goVersion && /^go\b/.test(command)) {
+    return `${GO_PREAMBLE} ${command}`;
+  }
+  // Cargo lives in ~/.cargo/bin. rustup normally edits the login profile, but
+  // sourcing ~/.cargo/env directly is robust against --no-modify-path and
+  // profile-ordering quirks. No-op when rustup isn't installed.
+  if (d.rustToolchain && /^cargo\b/.test(command)) {
+    return `${CARGO_PREAMBLE} ${command}`;
+  }
+  // rbenv (incl. brew-installed) only exposes the right ruby/bundle once
+  // `rbenv init` has run — the non-interactive login shell hasn't, so shims
+  // aren't on PATH. Initialize it; no-op when rbenv isn't the manager.
+  if (d.rubyVersion && /^(bundle|gem|ruby|rake|rails|bin\/rails)\b/.test(command)) {
+    return `${RBENV_PREAMBLE} ${command}`;
+  }
+  // Elixir: `mix` is exposed through asdf shims (or a brew install already on
+  // PATH). asdf init commonly lives in ~/.bashrc, which a login shell skips.
+  if (d.elixirVersion && /^mix\b/.test(command)) {
+    return `${ASDF_PREAMBLE} ${command}`;
+  }
+  // JVM build tools: maven/gradle and their ./wrappers need a JDK on PATH.
+  // devhelp installs the JDK via SDKMAN on Linux (or asdf), neither of which is
+  // on a fresh login shell's PATH; the ./gradlew/./mvnw wrappers fetch their own
+  // build tool but still need `java`.
+  if (d.javaVersion && /^(\.\/)?(mvn|gradle|mvnw|gradlew)\b/.test(command)) {
+    return `${SDKMAN_PREAMBLE} ${ASDF_PREAMBLE} ${command}`;
+  }
+  // Scala build tools (sbt/mill/scala/cs) come from Coursier
+  // (~/.local/share/coursier/bin) or SDKMAN and all need a JVM — none are on a
+  // fresh login shell's PATH.
+  if (d.scalaVersion && /^(\.\/)?(sbt|sbtx|mill|scala|cs)\b/.test(command)) {
+    return `${COURSIER_PREAMBLE} ${SDKMAN_PREAMBLE} ${ASDF_PREAMBLE} ${command}`;
+  }
+  // Haskell: ghcup installs ghc/cabal/stack under ~/.ghcup and ships an env
+  // script, mirroring rust's ~/.cargo/env — sourcing it is robust against
+  // profile ordering.
+  if (d.ghcVersion && /^(stack|cabal|ghc)\b/.test(command)) {
+    return `${GHCUP_PREAMBLE} ${command}`;
+  }
+  // .NET: dotnet-install.sh drops the SDK in ~/.dotnet (installDotnet only warns
+  // to add it), so the fresh login shell can't find `dotnet` without this.
+  if (d.dotnetVersion && /^dotnet\b/.test(command)) {
+    return `${DOTNET_PREAMBLE} ${command}`;
+  }
+  // Julia via juliaup: installs to ~/.juliaup/bin and edits a shell rc the fresh
+  // login shell won't source.
+  if (d.juliaVersion && /^julia\b/.test(command)) {
+    return `${JULIAUP_PREAMBLE} ${command}`;
+  }
+  // OCaml: dune and other opam-installed binaries live in the active opam switch,
+  // which only `opam env` puts on PATH. No-op when opam isn't installed.
+  if (d.ocamlVersion && /^(dune|opam)\b/.test(command)) {
+    return `${OPAM_PREAMBLE} ${command}`;
+  }
+  // Zig (Linux) unpacks to ~/.local/share/zig-<arch>-<ver> and installZig only
+  // appends to ~/.bashrc, which a non-interactive login shell never sources. The
+  // exact arch/version aren't known here, so glob the install dir onto PATH.
+  if (d.zigVersion && /^zig\b/.test(command)) {
+    return `${ZIG_PREAMBLE} ${command}`;
+  }
   return command;
 }
+
+// Sets $SUDO to "sudo" only when not already root, so commands work both on a
+// normal dev machine (non-root + sudo) and a root container/CI runner (no sudo).
+const SUDO_IF_NEEDED = 'SUDO=""; [ "$(id -u)" != 0 ] && SUDO="sudo";';
+
+// Maps `uname -m` to Go's release-tarball arch token, so we fetch the binary
+// that actually runs on this machine instead of always grabbing amd64.
+const GOARCH_DETECT =
+  'case "$(uname -m)" in ' +
+  'x86_64|amd64) GOARCH=amd64;; ' +
+  'aarch64|arm64) GOARCH=arm64;; ' +
+  'armv6l|armv7l) GOARCH=armv6l;; ' +
+  'i386|i686) GOARCH=386;; ' +
+  '*) GOARCH=amd64;; esac;';
+
+const GO_PREAMBLE = '[ -d /usr/local/go/bin ] && export PATH="/usr/local/go/bin:$PATH";';
+
+const BUN_PREAMBLE = '[ -d "$HOME/.bun/bin" ] && export PATH="$HOME/.bun/bin:$PATH";';
+
+const DENO_PREAMBLE = '[ -d "$HOME/.deno/bin" ] && export PATH="$HOME/.deno/bin:$PATH";';
+
+const CARGO_PREAMBLE = '[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env";';
+
+const RBENV_PREAMBLE =
+  '[ -d "$HOME/.rbenv/bin" ] && export PATH="$HOME/.rbenv/bin:$PATH"; ' +
+  'command -v rbenv >/dev/null 2>&1 && eval "$(rbenv init - 2>/dev/null)";';
+
+// asdf manages several runtimes (Elixir/Erlang, sometimes Java) behind shims in
+// ~/.asdf/shims. A login shell only has them on PATH if asdf init was wired into
+// ~/.bash_profile (many wire it into ~/.bashrc, which login shells skip), so
+// expose the shim dir directly. No-op when asdf isn't installed.
+const ASDF_PREAMBLE = '[ -d "$HOME/.asdf/shims" ] && export PATH="$HOME/.asdf/shims:$PATH";';
+
+// SDKMAN installs the JDK (and sbt/gradle/maven) under ~/.sdkman and exposes them
+// only after its init script runs — the same script installJava sources on Linux.
+const SDKMAN_PREAMBLE =
+  '[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ] && . "$HOME/.sdkman/bin/sdkman-init.sh";';
+
+// Coursier (Scala) installs launchers (sbt, scala, mill) into
+// ~/.local/share/coursier/bin and only edits ~/.profile, which a login shell
+// skips when ~/.bash_profile exists.
+const COURSIER_PREAMBLE =
+  '[ -d "$HOME/.local/share/coursier/bin" ] && export PATH="$HOME/.local/share/coursier/bin:$PATH";';
+
+// GHCup (Haskell) puts ghc/cabal/stack under ~/.ghcup and ships an env script,
+// mirroring rust's ~/.cargo/env.
+const GHCUP_PREAMBLE = '[ -f "$HOME/.ghcup/env" ] && . "$HOME/.ghcup/env";';
+
+// .NET: dotnet-install.sh drops the SDK in ~/.dotnet (installDotnet only warns to
+// add it), so the fresh login shell can't find `dotnet` without this.
+const DOTNET_PREAMBLE =
+  '[ -d "$HOME/.dotnet" ] && { export PATH="$HOME/.dotnet:$PATH"; export DOTNET_ROOT="$HOME/.dotnet"; };';
+
+// juliaup installs to ~/.juliaup/bin and edits a shell rc the fresh login shell
+// won't source.
+const JULIAUP_PREAMBLE = '[ -d "$HOME/.juliaup/bin" ] && export PATH="$HOME/.juliaup/bin:$PATH";';
+
+// OCaml: dune and other opam-installed binaries live in the active opam switch,
+// which only `opam env` puts on PATH.
+const OPAM_PREAMBLE = 'command -v opam >/dev/null 2>&1 && eval "$(opam env 2>/dev/null)";';
+
+// Zig (Linux) unpacks to ~/.local/share/zig-<arch>-<ver>; the arch/version
+// aren't known here, so glob the install dir onto PATH (literal glob when no
+// match → the guard skips it).
+const ZIG_PREAMBLE =
+  'for __z in "$HOME"/.local/share/zig-*; do [ -d "$__z" ] && export PATH="$__z:$PATH"; done 2>/dev/null;';
 
 /**
  * pnpm/yarn aren't installed just because Node is — on a clean machine a freshly
@@ -1461,16 +1640,6 @@ function truncate(s: string, n: number): string {
 /* Banner + summary                                                            */
 /* -------------------------------------------------------------------------- */
 
-function printBanner(opts: SetupOptions): void {
-  console.log();
-  console.log(
-    chalk.cyan.bold("  devhelp"),
-    opts.dryRun ? chalk.dim("· DRY RUN") : "",
-  );
-  console.log(chalk.dim("  ›"), opts.request);
-  console.log();
-}
-
 /** Returns the process exit code (0 = ready/inform, 1 = unsupported/incomplete). */
 function printSummary(ctx: PlaybookCtx): number {
   if (ctx.detected?.informOnly) {
@@ -1582,7 +1751,7 @@ function printIncompletePanel(ctx: PlaybookCtx): void {
  * recovery remediation → a stack-specific hint → re-run the exact command that
  * failed (so the user sees the full error in context).
  */
-function remedyFor(
+export function remedyFor(
   f: PlaybookCtx["failedSteps"][number],
   d: Detected | undefined,
 ): string[] {
@@ -1603,13 +1772,19 @@ function remedyFor(
 /** Stack-specific hint keyed off the step name, or null when none applies. */
 function hintFor(stepName: string, d: Detected | undefined): string | null {
   const lower = stepName.toLowerCase();
-  if (lower.includes("node")) return `Install Node manually from https://nodejs.org or via nvm`;
-  if (lower.includes("python"))
-    return `Install Python manually from https://python.org or via pyenv`;
-  if (lower.includes("rust")) return `Install Rust manually from https://rustup.rs`;
-  if (lower.includes("go")) return `Install Go manually from https://go.dev/dl/`;
-  if (lower.includes("dependencies"))
+  // Check the deps step first: its title is "Installing deps · <cmd>", and a
+  // command like "cargo build" contains the substring "go" — matching the Go
+  // runtime rule below and printing an absurd "Install Go" fix for a Rust error.
+  // The deps failure means the runtime is fine but the project install broke,
+  // so the right hint is to re-run the install command, not reinstall a runtime.
+  if (lower.includes("deps") || lower.includes("dependenc"))
     return `Run "${d?.installCommands[0] ?? "install"}" manually to see the full error`;
+  // Word boundaries so "cargo" doesn't match "go", "django" doesn't match "go", etc.
+  if (/\bnode\b/.test(lower)) return `Install Node manually from https://nodejs.org or via nvm`;
+  if (/\bpython\b/.test(lower))
+    return `Install Python manually from https://python.org or via pyenv`;
+  if (/\brust\b/.test(lower)) return `Install Rust manually from https://rustup.rs`;
+  if (/\bgo\b/.test(lower)) return `Install Go manually from https://go.dev/dl/`;
   if (lower.includes("submodule"))
     return `Run "git submodule update --init --recursive" manually`;
   return null;
@@ -1971,6 +2146,16 @@ async function installHaskell(ghcVersion: string, isStack: boolean, ctx: Playboo
   ctx.done.push(`ghc ${ghcVersion}`);
 }
 
+/**
+ * Coursier launcher arch slug for this machine. Coursier publishes
+ * `cs-x86_64-pc-linux.gz` and `cs-aarch64-pc-linux.gz`; downloading the x86_64
+ * launcher on arm64 yields a binary that dies in the ELF loader — the same
+ * class of bug as the hardcoded-amd64 Go install. No-op on x86_64.
+ */
+export function coursierArch(arch: string = process.arch): "x86_64" | "aarch64" {
+  return arch === "arm64" ? "aarch64" : "x86_64";
+}
+
 async function installScala(scalaVersion: string, buildSystem: string, ctx: PlaybookCtx, task: any): Promise<void> {
   const current = await tryVersion("scala", ["-version"]);
   if (current && current.includes(scalaVersion)) {
@@ -1985,18 +2170,21 @@ async function installScala(scalaVersion: string, buildSystem: string, ctx: Play
     } else {
       task.title = `Installing coursier`;
       await runShell(
-        `curl -fL https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz | gzip -d > cs && ` +
+        `curl -fL https://github.com/coursier/launchers/raw/master/cs-${coursierArch()}-pc-linux.gz | gzip -d > cs && ` +
         `chmod +x cs && ./cs setup --yes`,
         ctx.projectDir, ctx, task);
     }
   }
   task.title = `Installing Scala ${scalaVersion}`;
-  await runShell(`cs install scala:${scalaVersion}.0 scala3-compiler:${scalaVersion}.0 || true`, ctx.projectDir, ctx, task);
+  // `cs setup` (above, run in a previous shell) installs the managed `cs` to
+  // ~/.local/share/coursier/bin and only edits ~/.profile — not on this fresh
+  // shell's PATH — so expose it before invoking `cs` again.
+  await runShell(`${COURSIER_PREAMBLE} cs install scala:${scalaVersion}.0 scala3-compiler:${scalaVersion}.0 || true`, ctx.projectDir, ctx, task);
   if (buildSystem === "sbt" && !(await which("sbt"))) {
     if (os.platform() === "darwin" && (await which("brew"))) {
       await runShell(`brew install sbt`, ctx.projectDir, ctx, task);
     } else {
-      await runShell(`cs install sbt`, ctx.projectDir, ctx, task);
+      await runShell(`${COURSIER_PREAMBLE} cs install sbt`, ctx.projectDir, ctx, task);
     }
   }
   task.title = `Installed Scala ${scalaVersion}`;
@@ -2066,14 +2254,14 @@ async function installJulia(version: string, ctx: PlaybookCtx, task: any): Promi
       await runShell(`brew install juliaup`, ctx.projectDir, ctx, task);
     }
     task.title = `Installing Julia ${version}`;
-    await runShell(`juliaup add ${version} && juliaup default ${version}`, ctx.projectDir, ctx, task);
+    await runShell(`${JULIAUP_PREAMBLE} juliaup add ${version} && juliaup default ${version}`, ctx.projectDir, ctx, task);
   } else {
     if (!(await which("juliaup"))) {
       task.title = `Installing juliaup`;
       await runShell(`curl -fsSL https://install.julialang.org | sh -s -- --yes`, ctx.projectDir, ctx, task);
     }
     task.title = `Installing Julia ${version}`;
-    await runShell(`juliaup add ${version} && juliaup default ${version}`, ctx.projectDir, ctx, task);
+    await runShell(`${JULIAUP_PREAMBLE} juliaup add ${version} && juliaup default ${version}`, ctx.projectDir, ctx, task);
   }
   task.title = `Installed Julia ${version}`;
   ctx.done.push(`julia ${version}`);
