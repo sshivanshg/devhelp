@@ -1,6 +1,6 @@
 # devhelp differentiators
 
-Grounded in the 20-repo stress test ([`stress-test/results.json`](./stress-test/results.json), [`stress-test/RETEST_RESULTS.md`](./stress-test/RETEST_RESULTS.md)) and the regression suite (`run-regression.sh`). All numbers come from real runs.
+Grounded in a 20-repo stress test and regression runs. All numbers come from real runs.
 
 ## TL;DR
 

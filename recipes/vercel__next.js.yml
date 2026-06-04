@@ -1,0 +1,6 @@
+# vercel/next.js — large pnpm monorepo. Detection picks pnpm from the lockfile
+# and installs correctly; these notes set expectations no detector can infer.
+notes:
+  - "Large pnpm monorepo — the first `pnpm install` and build can take several minutes; be patient, it isn't hung."
+  - "Develop against a package by editing under packages/ and running its dev/build; the contributing guide walks through running an example app against your local build."
+  - "Run tests with `pnpm test` (the full suite is large — scope it to the area you changed)."

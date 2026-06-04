@@ -52,7 +52,7 @@ That's the happy path. devhelp doesn't try to replace mise for that.
 - The runtime is one of five things that need to be right
 - The README says "just `pnpm install`" but actually you also need to copy three `.env.example` files, generate the Prisma client, and start Postgres in Docker — and none of that is in the README
 
-This is the actual situation for most OSS contributors. We measured it: of 20 randomly-chosen popular OSS repos, **15 needed at least one post-install step that mise can't help with** (env files, Prisma, Playwright, submodules). The full breakdown is in [`../stress-test/SUMMARY.md`](../stress-test/SUMMARY.md).
+This is the actual situation for most OSS contributors. We measured it: of 20 randomly-chosen popular OSS repos, **15 needed at least one post-install step that mise can't help with** (env files, Prisma, Playwright, submodules).
 
 ## Composition, not replacement
 

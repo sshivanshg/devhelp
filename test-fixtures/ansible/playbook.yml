@@ -1,5 +1,0 @@
-- name: Setup servers
-  hosts: all
-  become: yes
-  roles:
-    - common

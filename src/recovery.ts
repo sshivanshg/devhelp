@@ -23,12 +23,27 @@ export interface RecoveryRule {
 
 export interface RecoveryMatch {
   ruleId: string;
+  /** Human, one-line statement of what went wrong (the rule's `description`). */
+  cause: string;
   remediation: string;
   systemDeps?: SystemDep[];
 }
 
 const isMac = () => process.platform === "darwin";
 const isLinux = () => process.platform === "linux";
+
+/**
+ * The OS-specific one-line Docker install. Single-sourced so the recovery rule
+ * and the proactive "services skipped — Docker missing" warning give identical
+ * guidance.
+ */
+export function dockerInstallOneLiner(): string {
+  return isMac()
+    ? "brew install --cask docker  (or download Docker Desktop from docker.com)"
+    : isLinux()
+      ? "curl -fsSL https://get.docker.com | sh"
+      : "install Docker Desktop from docker.com";
+}
 
 const RULES: RecoveryRule[] = [
   {
@@ -61,13 +76,125 @@ const RULES: RecoveryRule[] = [
         : "Install OpenSSL development headers and pkg-config",
     systemDeps: ["openssl-dev", "pkg-config"],
   },
+  {
+    // A C/C++ toolchain is missing — the usual cause of node-gyp/native-module
+    // builds failing on a fresh Linux box that has Node but no compiler.
+    id: "build-tools-missing",
+    description: "No C/C++ compiler toolchain (make / gcc) for a native build",
+    match: /make: .*command not found|make: not found|\bg?cc1?(plus)?\b.*(?:not found|No such file)|\b(gcc|g\+\+|cc): .*(?:not found|No such file)|C compiler cannot create executables|no acceptable C compiler found|need to install the build-essential/i,
+    remediation: isMac()
+      ? "Run: xcode-select --install   (installs the compiler toolchain, then re-run devhelp)"
+      : isLinux()
+        ? "Install a compiler: apt install build-essential / dnf install gcc gcc-c++ make / pacman -S base-devel  — or re-run with --fix"
+        : "Install a C/C++ build toolchain (make + a C compiler), then re-run",
+    systemDeps: ["build-tools"],
+  },
+
+  // --- Execution-path failures (hint-only; no safe automatic fix) -----------
+  // These cover the common reasons a real setup stalls. Each maps to one
+  // obvious next action so the INCOMPLETE panel never dead-ends on "check the
+  // log". Ordered most-specific first; findRecovery returns the first match.
+  {
+    // Distinct from docker-daemon-down: here Docker isn't installed at all, so
+    // there's no daemon to start. The headline newcomer blocker — give the exact
+    // one-line install, not just "install Docker".
+    id: "docker-not-installed",
+    description: "Docker isn't installed, so services can't start",
+    match: /docker: (?:command )?not found|docker-compose: (?:command )?not found|(?:command not found|not found): docker|'docker' is not recognized|docker: The term/i,
+    remediation: isMac()
+      ? `Install Docker: ${dockerInstallOneLiner()}, open it, then re-run devhelp`
+      : isLinux()
+        ? `Install Docker: ${dockerInstallOneLiner()}  then \`sudo usermod -aG docker $USER\`, re-log in, then re-run devhelp`
+        : `${dockerInstallOneLiner()}, start it, then re-run devhelp`,
+  },
+  {
+    id: "docker-daemon-down",
+    description: "Docker isn't running, so services couldn't start",
+    match: /Cannot connect to the Docker daemon|Is the docker daemon running|docker daemon is not running|error during connect.*docker/i,
+    remediation: isMac()
+      ? "Start Docker Desktop (open -a Docker), wait for it, then re-run devhelp"
+      : "Start Docker (sudo systemctl start docker), then re-run devhelp",
+  },
+  {
+    id: "db-unreachable",
+    description: "The database server isn't reachable yet",
+    match: /Can't reach database server|P1001|database server at .* (?:is not reachable|refused)|ECONNREFUSED.*(?:5432|3306|6379|27017)|could not connect to server.*(?:5432|3306)/i,
+    remediation:
+      "Start the DB service first (docker compose up -d, or pass --with-services), confirm it's healthy, then re-run",
+  },
+  {
+    id: "prisma-schema-missing",
+    description: "Prisma couldn't locate the schema file",
+    match: /Could not load `--schema`|Could not find a schema\.prisma|Could not load schema from|provided path .* (?:file or directory not found|does not exist)/i,
+    remediation:
+      'Check the schema path in package.json ("prisma": { "schema": ... }), or pass --schema with an absolute path',
+  },
+  {
+    id: "env-var-conflict",
+    description: "Conflicting env vars across .env files",
+    match: /conflict between env vars in .* and|There is a conflict between/i,
+    remediation: "Reconcile the duplicate keys between the conflicting .env files, then re-run",
+  },
+  {
+    id: "port-in-use",
+    description: "A required port is already in use",
+    match: /EADDRINUSE|address already in use|port is already allocated|bind: address already in use/i,
+    remediation: "Free the port (lsof -i :<port> then kill the process) or change it, then re-run",
+  },
+  {
+    id: "disk-full",
+    description: "Out of disk space",
+    match: /ENOSPC|no space left on device|not enough space/i,
+    remediation: "Free up disk space (e.g. docker system prune, clear caches), then re-run",
+  },
+  {
+    // Ordered before network-unreachable: a not-found/auth clone failure is a
+    // bad URL or private repo, not a flaky connection — different fix, and we
+    // must not waste the automatic clone-retry on it.
+    id: "repo-not-found",
+    description: "The repository couldn't be found or accessed",
+    match: /Repository not found|repository '.*' not found|fatal: could not read Username|Authentication failed|Permission denied \(publickey\)|terminal prompts disabled|remote: (?:Not Found|Invalid username or password)/i,
+    remediation:
+      "Check the repo name/URL is correct and public — for a private repo, set up git auth (SSH key or token) first, then re-run",
+  },
+  {
+    id: "network-unreachable",
+    description: "Couldn't reach the network (clone or registry)",
+    match: /fetch-pack|early EOF|RPC failed|curl \d+|index-pack|Connection reset by peer|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|Could not resolve host|network timeout|ECONNRESET/i,
+    remediation: "Check your connection/proxy and re-run — clones are shallow, so a retry is cheap",
+  },
+  {
+    id: "registry-auth",
+    description: "The package registry rejected the request",
+    match: /\b(401 Unauthorized|403 Forbidden)\b|code E401|code E403|authentication required|need auth/i,
+    remediation: "Check your registry auth (npm whoami) or .npmrc token, then re-run",
+  },
+  {
+    // Generic safety net for any "<tool>: command not found" we don't have a
+    // tailored rule for. Ordered LAST so specific rules (docker, build tools,
+    // pkg-config, repo-not-found) always win. The panel already prints the cause
+    // line, which names the missing tool — so the fix can point at it.
+    id: "command-not-found",
+    description: "A required command isn't installed",
+    match: /\S+: (?:command )?not found|is not recognized as an internal or external command/i,
+    remediation: isMac()
+      ? "Install the missing command shown above (try: brew install <name>), then re-run devhelp"
+      : isLinux()
+        ? "Install the missing command shown above with your package manager (apt install / dnf install / pacman -S <name>), then re-run devhelp"
+        : "Install the missing command shown above, ensure it's on your PATH, then re-run devhelp",
+  },
 ];
 
 export function findRecovery(errorText: string): RecoveryMatch | null {
   if (!errorText) return null;
   for (const rule of RULES) {
     if (rule.match.test(errorText)) {
-      return { ruleId: rule.id, remediation: rule.remediation, systemDeps: rule.systemDeps };
+      return {
+        ruleId: rule.id,
+        cause: rule.description,
+        remediation: rule.remediation,
+        systemDeps: rule.systemDeps,
+      };
     }
   }
   return null;

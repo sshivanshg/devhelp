@@ -9,6 +9,7 @@
  * Spawning + network only happen when the user passes --verify.
  */
 import { execa, type ResultPromise } from "execa";
+import { pickShell } from "./platform.js";
 
 export interface VerifyCheck {
   name: string;
@@ -56,7 +57,9 @@ export async function verifyTests(
   label: string,
   timeoutMs = 5 * 60 * 1000,
 ): Promise<VerifyCheck> {
-  const shell = process.env.SHELL || "/bin/bash";
+  // Same shell selection as the setup runner, so verification runs the command
+  // exactly the way the install steps did.
+  const shell = pickShell() ?? "/bin/bash";
   const r = await execa(shell, ["-lc", shellCmd], {
     cwd,
     reject: false,
@@ -75,7 +78,7 @@ export async function verifyDevServer(
   label: string,
   timeoutMs = 60 * 1000,
 ): Promise<VerifyCheck> {
-  const shell = process.env.SHELL || "/bin/bash";
+  const shell = pickShell() ?? "/bin/bash";
   // detached so the child is its own process-group leader — lets us kill the
   // whole tree (dev servers spawn children) by signalling the negative pid.
   const sub = execa(shell, ["-lc", shellCmd], {
@@ -101,6 +104,16 @@ function killProcessTree(sub: ResultPromise): void {
   if (pid) {
     try {
       process.kill(-pid, "SIGTERM");
+      // Dev servers (next, vite, webpack) routinely ignore SIGTERM; escalate to
+      // SIGKILL shortly after so we never leak a server tree. unref() so this
+      // timer can't keep the CLI alive on its own.
+      setTimeout(() => {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          /* group already exited on SIGTERM */
+        }
+      }, 2000).unref();
       return;
     } catch {
       /* group already gone or not a leader — fall through */

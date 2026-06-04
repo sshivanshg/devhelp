@@ -39,6 +39,16 @@ export async function listDirs(parent: string): Promise<string[]> {
 }
 
 /**
+ * BOM-tolerant JSON.parse for manifest files. Editors on Windows (Visual Studio,
+ * and some VS Code setups) prepend a UTF-8 BOM (U+FEFF); a raw JSON.parse throws
+ * on it, which would otherwise silently disable detection for an entirely normal
+ * manifest. Strip a single leading BOM before parsing.
+ */
+export function parseJson(raw: string): any {
+  return JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+}
+
+/**
  * Minimal JSONC stripper: removes // line and /* block *\/ comments outside strings.
  * Used by .devcontainer/devcontainer.json and deno.jsonc which both allow comments.
  */

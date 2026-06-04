@@ -1,11 +1,12 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { normalizeNodeVersion, isFloorSpec } from "./versions.js";
+import { normalizeNodeVersion, normalizeRubyVersion, isFloorSpec } from "./versions.js";
 import {
   tryRead,
   exists,
   fileExistsAny,
   listDirs,
+  parseJson,
   stripJsonComments,
 } from "./detectors/shared.js";
 
@@ -93,7 +94,8 @@ export interface Detected {
   devcontainerSetupCommand?: string;
 
   // Docker / service dependencies
-  dockerComposeFiles: string[]; // relative paths to docker-compose*.yml
+  dockerComposeFiles: string[]; // relative paths to docker-compose*.yml (all found)
+  serviceComposeFiles: string[]; // subset safe to auto-start: pure service deps (no `build:`)
   envHasLocalDb: boolean; // .env.example references localhost:5432 / 6379 / 27017
 
   // "I don't know this stack" signals
@@ -248,6 +250,7 @@ export async function detect(dir: string): Promise<Detected> {
     rustIsOptional: false,
     goNeedsManualInstall: false,
     dockerComposeFiles: [],
+    serviceComposeFiles: [],
     envHasLocalDb: false,
     unrecognizedManifests: [],
   };
@@ -317,7 +320,7 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
 
   let pkg: any;
   try {
-    pkg = JSON.parse(pkgRaw);
+    pkg = parseJson(pkgRaw);
   } catch {
     return;
   }
@@ -433,7 +436,7 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
     const appJsonRaw = await tryRead(path.join(dir, "app.json"));
     if (appJsonRaw) {
       try {
-        const aj = JSON.parse(appJsonRaw);
+        const aj = parseJson(appJsonRaw);
         if (aj?.expo) isExpoApp = true;
       } catch { /* ignore */ }
     }
@@ -546,6 +549,19 @@ async function viteConfigInApps(dir: string): Promise<boolean> {
   return false;
 }
 
+// Latest stable CPython we'll resolve to by default. CI matrices and constraint
+// upper-edges routinely name unreleased versions (e.g. "3.14"/"3.15" pre-release
+// rows); resolving to those makes `pyenv install` fail on a version that doesn't
+// exist. We cap derived versions here. Bump when a new stable ships.
+const LATEST_STABLE_PYTHON = "3.13";
+
+/** Numeric compare of "3.x" version strings. Positive when a > b. */
+function cmpMinor(a: string, b: string): number {
+  const [aM, am] = a.split(".").map(Number);
+  const [bM, bm] = b.split(".").map(Number);
+  return aM - bM || am - bm;
+}
+
 async function detectPython(dir: string, out: Detected): Promise<void> {
   const pyProject = await tryRead(path.join(dir, "pyproject.toml"));
   const reqTxt = await tryRead(path.join(dir, "requirements.txt"));
@@ -553,7 +569,7 @@ async function detectPython(dir: string, out: Detected): Promise<void> {
   const pythonVersionFile = await tryRead(path.join(dir, ".python-version"));
   if (!pyProject && !reqTxt && !pipfile && !pythonVersionFile) return;
 
-  const LATEST_PYTHON = "3.13";
+  const LATEST_PYTHON = LATEST_STABLE_PYTHON;
 
   // Resolution order: explicit pin → tool-specific config → CI hint → latest stable.
   let resolved: string | undefined;
@@ -581,12 +597,12 @@ async function detectPython(dir: string, out: Detected): Promise<void> {
   } else if (reqTxt) {
     out.pythonTool = "pip-requirements";
     out.installCommands.push(
-      "python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt",
+      "python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt",
     );
   } else if (pyProject) {
     out.pythonTool = "pip-pyproject";
     out.installCommands.push(
-      "python -m venv .venv && . .venv/bin/activate && pip install -e .",
+      "python3 -m venv .venv && . .venv/bin/activate && pip install -e .",
     );
   }
   out.testCommand = out.testCommand ?? "pytest";
@@ -704,7 +720,7 @@ async function detectPostInstall(dir: string, out: Detected): Promise<void> {
     const rootPkg = await tryRead(path.join(dir, "package.json"));
     if (rootPkg) {
       try {
-        const pkg = JSON.parse(rootPkg);
+        const pkg = parseJson(rootPkg);
         out.prismaSeedConfigured = !!pkg?.prisma?.seed;
       } catch {
         /* ignore */
@@ -741,11 +757,28 @@ async function detectPostInstall(dir: string, out: Detected): Promise<void> {
     }
   }
 
-  // Local DB hint: scan collected env templates for localhost:5432 (postgres) / 6379 (redis) / 27017 (mongo).
+  // Which composes are safe to `up` for host-side dev? A compose with a `build:`
+  // directive builds the app itself (a full containerized run) — starting it
+  // collides with `yarn dev` on the host and often fails on missing images.
+  // Composes without `build:` are pure service deps (Postgres/Redis/Mailhog),
+  // which is exactly what the host dev server needs. Fall back to all only when
+  // every compose builds (no pure-service option to prefer).
+  for (const f of out.dockerComposeFiles) {
+    const raw = await tryRead(path.join(dir, f));
+    if (raw && !/^\s+build\s*:/m.test(raw)) out.serviceComposeFiles.push(f);
+  }
+  if (!out.serviceComposeFiles.length) out.serviceComposeFiles = [...out.dockerComposeFiles];
+
+  // Local DB hint: a datastore connection URL (postgres/mysql/redis/mongo) that
+  // points at localhost means the app needs a local service running. Match by
+  // scheme rather than well-known ports so custom ports (e.g. 5450) still count;
+  // also keep the bare host:port forms for non-URL configs.
+  const localDbRe =
+    /(postgres(?:ql)?|mysql|mariadb|redis|rediss|mongodb(?:\+srv)?):\/\/[^\s"']*@?(localhost|127\.0\.0\.1)|(localhost|127\.0\.0\.1):(5432|3306|6379|27017)/i;
   for (const template of out.envTemplates) {
     const raw = await tryRead(path.join(dir, template));
     if (!raw) continue;
-    if (/localhost:(5432|6379|27017)/.test(raw)) {
+    if (localDbRe.test(raw)) {
       out.envHasLocalDb = true;
       break;
     }
@@ -758,7 +791,7 @@ async function detectDevcontainer(dir: string, out: Detected): Promise<void> {
   if (!raw) return;
   let dc: any;
   try {
-    dc = JSON.parse(stripJsonComments(raw));
+    dc = parseJson(stripJsonComments(raw));
   } catch {
     return;
   }
@@ -888,13 +921,14 @@ async function ciPythonHint(root: string): Promise<string | undefined> {
       }
     }
   }
-  if (!versions.length) return undefined;
-  versions.sort((a, b) => {
-    const [aM, am] = a.split(".").map(Number);
-    const [bM, bm] = b.split(".").map(Number);
-    return bM - aM || bm - am;
-  });
-  return versions[0];
+  // Drop unreleased versions (CI matrices commonly include a "3.14"/"3.15"
+  // pre-release row). Picking the max otherwise resolves to a version pyenv
+  // can't install. If every hint is unreleased, fall through to the constraint
+  // / latest-stable logic rather than returning a broken version.
+  const stable = versions.filter((v) => cmpMinor(v, LATEST_STABLE_PYTHON) <= 0);
+  if (!stable.length) return undefined;
+  stable.sort((a, b) => cmpMinor(b, a));
+  return stable[0];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -962,7 +996,7 @@ async function detectRuby(root: string, out: Detected): Promise<void> {
   if (rubyVersionFile) rubyVersion = rubyVersionFile.trim();
   if (!rubyVersion) {
     const gemfileRuby = gemfile.match(/^ruby\s+["']([^"']+)["']/m);
-    if (gemfileRuby) rubyVersion = gemfileRuby[1];
+    if (gemfileRuby) rubyVersion = normalizeRubyVersion(gemfileRuby[1]);
   }
   rubyVersion ??= "3.3.0";
 
@@ -1008,7 +1042,7 @@ async function detectPHP(root: string, out: Detected): Promise<void> {
   if (!composerRaw) return;
   let composer: any;
   try {
-    composer = JSON.parse(composerRaw);
+    composer = parseJson(composerRaw);
   } catch {
     return;
   }
@@ -1225,7 +1259,7 @@ async function detectDotnet(root: string, out: Detected): Promise<void> {
   const globalJsonRaw = await tryRead(path.join(root, "global.json"));
   if (globalJsonRaw) {
     try {
-      const gj = JSON.parse(globalJsonRaw);
+      const gj = parseJson(globalJsonRaw);
       const v: string | undefined = gj?.sdk?.version;
       if (v) dotnetVersion = v.split(".")[0];
     } catch {
@@ -1288,7 +1322,7 @@ async function detectDart(root: string, out: Detected): Promise<void> {
     const fvm = await tryRead(path.join(root, ".fvm", "fvm_config.json"));
     if (fvm) {
       try {
-        const cfg = JSON.parse(fvm);
+        const cfg = parseJson(fvm);
         sdkVersion = cfg.flutterSdkVersion ?? cfg.flutter;
       } catch {
         /* ignore */
@@ -1336,14 +1370,14 @@ async function detectDeno(root: string, out: Detected): Promise<void> {
   let config: any = {};
   if (denoJson) {
     try {
-      config = JSON.parse(denoJson);
+      config = parseJson(denoJson);
     } catch {
       /* ignore */
     }
   } else if (denoJsonc) {
     const stripped = denoJsonc.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     try {
-      config = JSON.parse(stripped);
+      config = parseJson(stripped);
     } catch {
       /* ignore */
     }
@@ -1739,7 +1773,7 @@ async function detectR(root: string, out: Detected): Promise<void> {
   let rVersion: string | undefined;
   if (hasRenvLock) {
     try {
-      const lock = JSON.parse((await tryRead(path.join(root, "renv.lock"))) ?? "{}");
+      const lock = parseJson((await tryRead(path.join(root, "renv.lock"))) ?? "{}");
       rVersion = lock?.R?.Version?.split(".").slice(0, 2).join(".");
     } catch { /* ignore */ }
   }
