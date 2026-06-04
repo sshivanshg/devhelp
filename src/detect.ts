@@ -328,6 +328,9 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
   const lockfile = await fileExistsAny(dir, [
     "pnpm-lock.yaml",
     "yarn.lock",
+    // bun.lock is the text format Bun 1.2 introduced (Jan 2025); bun.lockb is
+    // the legacy binary. New projects often ship only the text form.
+    "bun.lock",
     "bun.lockb",
     "package-lock.json",
   ]);
@@ -377,8 +380,16 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
   const nodeSpec = [pkg.volta?.node, nvmrc, nodeVersionFile, pkg.engines?.node].find(
     (s) => cleanNode(s) !== undefined,
   );
-  out.nodeVersion = cleanNode(nodeSpec) ?? (isNodeProject ? "lts/*" : undefined);
-  out.nodeVersionIsFloor = isFloorSpec(nodeSpec);
+  // CI's setup-node version is the concrete pin a repo proves on every PR. Prefer
+  // it when the manifest only gives a floor (e.g. engines ">=18", which nvm
+  // would install as "whatever 18.x is latest today" — drift vs. CI).
+  const ciNodeVersion = isNodeProject ? await ciNodeHint(dir) : undefined;
+  const manifestIsFloor = isFloorSpec(nodeSpec);
+  const preferCi = ciNodeVersion && (!nodeSpec || manifestIsFloor);
+  out.nodeVersion = preferCi
+    ? ciNodeVersion
+    : cleanNode(nodeSpec) ?? (isNodeProject ? "lts/*" : undefined);
+  out.nodeVersionIsFloor = manifestIsFloor && !preferCi;
   out.pkgManager = pickPackageManager(pkg, lockfile);
   out.nodeIsToolingOnly = !isNodeProject;
 
@@ -550,10 +561,10 @@ async function viteConfigInApps(dir: string): Promise<boolean> {
 }
 
 // Latest stable CPython we'll resolve to by default. CI matrices and constraint
-// upper-edges routinely name unreleased versions (e.g. "3.14"/"3.15" pre-release
+// upper-edges routinely name unreleased versions (e.g. "3.15"/"3.16" pre-release
 // rows); resolving to those makes `pyenv install` fail on a version that doesn't
 // exist. We cap derived versions here. Bump when a new stable ships.
-const LATEST_STABLE_PYTHON = "3.13";
+const LATEST_STABLE_PYTHON = "3.14";
 
 /** Numeric compare of "3.x" version strings. Positive when a > b. */
 function cmpMinor(a: string, b: string): number {
@@ -596,13 +607,34 @@ async function detectPython(dir: string, out: Detected): Promise<void> {
     out.installCommands.push("pipenv install");
   } else if (reqTxt) {
     out.pythonTool = "pip-requirements";
+    // Many Python repos split runtime vs dev deps into a second requirements
+    // file (requirements-dev.txt, requirements/dev.txt, etc.). Without
+    // installing it, pytest/mypy/ruff are missing and the test step fails. We
+    // chain known dev-requirement filenames into the same pip call.
+    const devReqs: string[] = [];
+    for (const cand of [
+      "requirements-dev.txt",
+      "requirements_dev.txt",
+      "dev-requirements.txt",
+      "requirements-test.txt",
+      "requirements/dev.txt",
+      "requirements/test.txt",
+    ]) {
+      if (await exists(path.join(dir, cand))) devReqs.push(cand);
+    }
+    const reqArgs = ["requirements.txt", ...devReqs].map((r) => `-r ${r}`).join(" ");
     out.installCommands.push(
-      "python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt",
+      `python3 -m venv .venv && . .venv/bin/activate && pip install ${reqArgs}`,
     );
   } else if (pyProject) {
     out.pythonTool = "pip-pyproject";
+    // PEP 621 [project.optional-dependencies] groups deps under named extras
+    // (dev/test/tests). Without the right extra, `pip install -e .` skips
+    // pytest/ruff and the test step can't run. Prefer dev > test > tests.
+    const extra = pickPyProjectExtra(pyProject);
+    const target = extra ? `.[${extra}]` : ".";
     out.installCommands.push(
-      "python3 -m venv .venv && . .venv/bin/activate && pip install -e .",
+      `python3 -m venv .venv && . .venv/bin/activate && pip install -e ${JSON.stringify(target)}`,
     );
   }
   out.testCommand = out.testCommand ?? "pytest";
@@ -619,16 +651,25 @@ async function detectPython(dir: string, out: Detected): Promise<void> {
     if (out.framework && !out.devUrl) out.devUrl = out.framework.defaultUrl;
   }
 
-  // Django migrations under --with-services. The command must re-enter the
+  // Migration commands under --with-services. The command must re-enter the
   // environment the deps were installed into (the venv/tool doesn't persist
   // across shell invocations).
+  const pyRun =
+    out.pythonTool === "poetry" ? "poetry run "
+    : out.pythonTool === "uv" ? "uv run "
+    : out.pythonTool === "pipenv" ? "pipenv run "
+    : ". .venv/bin/activate && ";
+
   if (out.framework?.name === "Django" && (await exists(path.join(dir, "manage.py")))) {
-    const pyRun =
-      out.pythonTool === "poetry" ? "poetry run "
-      : out.pythonTool === "uv" ? "uv run "
-      : out.pythonTool === "pipenv" ? "pipenv run "
-      : ". .venv/bin/activate && ";
     out.migrationCommands.push(`${pyRun}python manage.py migrate`);
+  }
+
+  // Alembic — the migration tool for SQLAlchemy and a lot of FastAPI/Flask
+  // apps. An alembic.ini at the repo root means the project is committing
+  // migrations; `alembic upgrade head` applies them. Skipped when no ini file
+  // exists (just a transitive alembic dep doesn't mean this repo runs them).
+  if (await exists(path.join(dir, "alembic.ini"))) {
+    out.migrationCommands.push(`${pyRun}alembic upgrade head`);
   }
 }
 
@@ -637,7 +678,12 @@ async function detectRust(dir: string, out: Detected): Promise<void> {
   const rustToolchainToml = await tryRead(path.join(dir, "rust-toolchain.toml"));
   const cargoToml = await tryRead(path.join(dir, "Cargo.toml"));
   if (!rustToolchain && !rustToolchainToml && !cargoToml) return;
-  out.rustToolchain = (rustToolchain ?? "stable").trim() || "stable";
+  // Channel resolution order: rust-toolchain.toml `[toolchain] channel = "…"`,
+  // then a bare `rust-toolchain` file (legacy — usually just the version
+  // string, but TOML-format is allowed too), then fall back to "stable".
+  const tomlChannel = parseRustChannel(rustToolchainToml);
+  const legacyChannel = parseRustChannel(rustToolchain) ?? rustToolchain?.trim();
+  out.rustToolchain = tomlChannel || legacyChannel || "stable";
 
   // If Node has a real framework, treat Rust as optional (compiler / native modules).
   // Most contributors don't need to rebuild the native bits.
@@ -797,10 +843,12 @@ async function detectDevcontainer(dir: string, out: Detected): Promise<void> {
   }
   const image: string = dc.image ?? dc.build?.image ?? "";
   // mcr.microsoft.com/devcontainers/javascript-node:1-20-bookworm → Node 20
+  // mcr.microsoft.com/devcontainers/typescript-node:1-20-bookworm → Node 20
+  // node:22-alpine / node:20-bookworm (upstream Docker Hub tag)        → Node 22/20
   // mcr.microsoft.com/devcontainers/python:3 / python:3.12 / python:1-3.12 → Python 3.12
   // mcr.microsoft.com/devcontainers/go:1.25 → Go 1.25
   if (image) {
-    const nodeMatch = image.match(/javascript-node[:\-][\d\-]*?(\d{2,})(?:-|$)/);
+    const nodeMatch = image.match(/\b(?:javascript-|typescript-)?node[:\-][\d\-]*?(\d{2,})(?:-|$)/);
     const pyMatch = image.match(/python[:\-](?:[\d\-]*?)?(\d+\.\d+)(?:-|$)/);
     const goMatch = image.match(/\bgo[:\-](?:[\d\-]*?)?(\d+\.\d+)(?:-|$)/);
     if (nodeMatch && !out.nodeVersion) out.nodeVersion = nodeMatch[1];
@@ -813,13 +861,24 @@ async function detectDevcontainer(dir: string, out: Detected): Promise<void> {
   }
 }
 
+// Manifests for stacks devhelp doesn't handle. Surfaced by name in the
+// UNSUPPORTED panel so a user knows what we saw and what to ask for. Only list
+// files no other detector recognizes — anything covered (meson.build, mix.exs,
+// flake.nix, WORKSPACE, Cargo.toml, …) doesn't belong here.
 const UNRECOGNIZED_MANIFEST_FILES = [
   "CMakeLists.txt",
   "Makefile",
+  "GNUmakefile",
   "configure",
   "configure.ac",
   "rebar.config",
   "shard.yml",
+  "nimble.toml",
+  "nim.cfg",
+  "justfile",
+  "Justfile",
+  "Taskfile.yml",
+  "Taskfile.yaml",
 ];
 
 async function detectUnrecognized(dir: string, out: Detected): Promise<void> {
@@ -849,7 +908,7 @@ function cleanNode(v?: string | null): string | undefined {
 function pickPackageManager(pkg: { packageManager?: string }, lockfile: string | null): PkgManager {
   if (lockfile === "pnpm-lock.yaml") return "pnpm";
   if (lockfile === "yarn.lock") return "yarn";
-  if (lockfile === "bun.lockb") return "bun";
+  if (lockfile === "bun.lock" || lockfile === "bun.lockb") return "bun";
   if (lockfile === "package-lock.json") return "npm";
   const pm = pkg.packageManager;
   if (pm?.startsWith("pnpm")) return "pnpm";
@@ -862,7 +921,7 @@ function pickPackageManager(pkg: { packageManager?: string }, lockfile: string |
 function installCommandFor(pm: PkgManager, lockfile: string | null): string {
   if (lockfile === "pnpm-lock.yaml") return "pnpm install";
   if (lockfile === "yarn.lock") return "yarn install";
-  if (lockfile === "bun.lockb") return "bun install";
+  if (lockfile === "bun.lock" || lockfile === "bun.lockb") return "bun install";
   if (lockfile === "package-lock.json") return "npm ci";
   return `${pm} install`;
 }
@@ -882,6 +941,35 @@ function isExactPin(content: string): boolean {
   const m = content.match(/(?:requires-python|^python)\s*=\s*["']([^"']+)["']/m);
   if (!m) return false;
   return /^[\d.]+$/.test(m[1].trim());
+}
+
+/**
+ * Pull the channel out of rust-toolchain / rust-toolchain.toml when it's
+ * TOML-formatted (`[toolchain]\nchannel = "1.75.0"`). Returns undefined when
+ * the input isn't a string, has no [toolchain] section, or has no channel key —
+ * the caller falls back to the file's trimmed content or "stable".
+ */
+function parseRustChannel(content: string | null | undefined): string | undefined {
+  if (!content) return undefined;
+  if (!/\[toolchain\]/.test(content)) return undefined;
+  const m = content.match(/^\s*channel\s*=\s*["']([^"']+)["']/m);
+  return m?.[1].trim() || undefined;
+}
+
+/**
+ * Pick the right `[project.optional-dependencies]` extra to install with `pip
+ * install -e .[<extra>]`. Preference order: dev > test > tests. Returns the
+ * extra name, or undefined when none matches. Conservative: only matches the
+ * canonical PEP 621 section; doesn't touch poetry/hatch group syntaxes.
+ */
+function pickPyProjectExtra(content: string): string | undefined {
+  const m = content.match(/\[project\.optional-dependencies\]([\s\S]*?)(?:\n\[|$)/);
+  if (!m) return undefined;
+  const section = m[1];
+  for (const key of ["dev", "test", "tests"]) {
+    if (new RegExp(`^\\s*${key}\\s*=`, "m").test(section)) return key;
+  }
+  return undefined;
 }
 
 function parseToolPython(content: string): string | undefined {
@@ -929,6 +1017,70 @@ async function ciPythonHint(root: string): Promise<string | undefined> {
   if (!stable.length) return undefined;
   stable.sort((a, b) => cmpMinor(b, a));
   return stable[0];
+}
+
+/**
+ * Mine `.github/workflows/*.yml` for the concrete Node version a repo's CI
+ * actually installs (`uses: actions/setup-node@v* / with: node-version: <X>`).
+ * Returns the highest concrete version seen, or undefined when nothing usable
+ * is found. Used as a tiebreak for vague manifest specs (engines ">=18" /
+ * caret ranges) so the version devhelp installs matches what CI proves.
+ *
+ * Conservative: skips matrix interpolations (`${{ matrix.node }}`) and
+ * `lts/*` pseudo-versions; the goal is a concrete pin or nothing.
+ */
+async function ciNodeHint(root: string): Promise<string | undefined> {
+  const wfDir = path.join(root, ".github", "workflows");
+  if (!(await exists(wfDir))) return undefined;
+  const files = await fs.readdir(wfDir).catch(() => []);
+  const versions: string[] = [];
+  for (const f of files) {
+    if (!f.endsWith(".yml") && !f.endsWith(".yaml")) continue;
+    const content = await fs.readFile(path.join(wfDir, f), "utf8").catch(() => "");
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!/node-version/i.test(line)) continue;
+      // Same-line scalar value: "node-version: 22" / "node-version: '22.11.0'".
+      const same = line.match(/node-version\s*:\s*["']?([^"'\s#]+)/i);
+      if (same) collectNodeVersion(versions, same[1]);
+      // Look-ahead for short array/list forms: node-version: \n  - 20 \n  - 22
+      for (let j = 1; j <= 4 && i + j < lines.length; j++) {
+        const ahead = lines[i + j];
+        const arr = ahead.match(/^\s*-\s+["']?([^"'\s#]+)/);
+        if (arr) collectNodeVersion(versions, arr[1]);
+        else if (!/^\s*$/.test(ahead) && !/^\s*[-\[]/.test(ahead)) break;
+      }
+    }
+  }
+  if (!versions.length) return undefined;
+  versions.sort(cmpNodeVersionDesc);
+  return versions[0];
+}
+
+function collectNodeVersion(out: string[], raw: string): void {
+  let v = raw.trim();
+  if (!v) return;
+  if (v.includes("${{")) return;
+  if (/^lts/i.test(v)) return;
+  // setup-node accepts a "major.x" / "major.minor.x" glob (very common: "22.x",
+  // "18.x"). Strip the trailing ".x" tokens so we treat "22.x" as the major
+  // pin "22" — better than dropping the hint entirely.
+  v = v.replace(/(?:\.x)+$/i, "");
+  if (!v) return;
+  // Accept "X", "X.Y", "X.Y.Z"; reject anything with shell/glob noise.
+  if (!/^\d+(\.\d+){0,2}$/.test(v)) return;
+  out.push(v);
+}
+
+function cmpNodeVersionDesc(a: string, b: string): number {
+  const pa = a.split(".").map((x) => Number(x));
+  const pb = b.split(".").map((x) => Number(x));
+  for (let i = 0; i < 3; i++) {
+    const d = (pb[i] ?? 0) - (pa[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1067,14 +1219,29 @@ async function detectPHP(root: string, out: Detected): Promise<void> {
   out.phpFramework = framework;
   out.installCommands.push("composer install");
 
+  // Laravel/Symfony ship Vite (laravel-vite-plugin / Symfony Encore) as the
+  // asset bundler, so Node detection set framework="Vite" and devUrl=:5173.
+  // The real primary stack is the PHP framework — override Vite specifically
+  // so the dev URL and framework label name the right thing. Other Node
+  // frameworks (Next/Nuxt/etc.) we leave alone — that signals a hybrid Inertia
+  // setup where the JS server is the user-facing one.
+  const overridable = !out.framework || out.framework.name === "Vite";
   if (framework === "Laravel") {
     out.devCommand = out.devCommand ?? "php artisan serve";
-    out.devUrl = out.devUrl ?? "http://localhost:8000";
-    out.framework = out.framework ?? { name: "Laravel", defaultUrl: "http://localhost:8000" };
+    if (overridable) {
+      out.framework = { name: "Laravel", defaultUrl: "http://localhost:8000" };
+      out.devUrl = "http://localhost:8000";
+    } else {
+      out.devUrl = out.devUrl ?? "http://localhost:8000";
+    }
   } else if (framework === "Symfony") {
     out.devCommand = out.devCommand ?? "symfony server:start";
-    out.devUrl = out.devUrl ?? "http://localhost:8000";
-    out.framework = out.framework ?? { name: "Symfony", defaultUrl: "http://localhost:8000" };
+    if (overridable) {
+      out.framework = { name: "Symfony", defaultUrl: "http://localhost:8000" };
+      out.devUrl = "http://localhost:8000";
+    } else {
+      out.devUrl = out.devUrl ?? "http://localhost:8000";
+    }
   } else if (framework) {
     out.framework = out.framework ?? { name: framework };
   }

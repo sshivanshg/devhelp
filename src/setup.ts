@@ -456,10 +456,15 @@ function doctorProbes(d: Detected): { tool: string; want?: string; bin: string; 
   if (d.bunIsRuntime) p.push({ tool: "Bun", want: d.bunVersion, bin: "bun", args: ["--version"] });
   if (d.pythonVersion) p.push({ tool: "Python", want: d.pythonVersion, bin: "python3", args: ["--version"] });
   if (d.rustToolchain && !d.rustIsOptional) p.push({ tool: "Rust", want: d.rustToolchain, bin: "rustc", args: ["--version"] });
-  if (d.goVersion) p.push({ tool: "Go", want: d.goVersion, bin: "go", args: ["version"] });
+  // go.mod's `go X.Y` directive is a minimum (Go is backward-compatible), so
+  // probe it as a floor — otherwise a newer installed Go reads as "mismatch".
+  if (d.goVersion) p.push({ tool: "Go", want: `>=${d.goVersion}`, bin: "go", args: ["version"] });
   if (d.rubyVersion) p.push({ tool: "Ruby", want: d.rubyVersion, bin: "ruby", args: ["--version"] });
   if (d.phpVersion) p.push({ tool: "PHP", want: d.phpVersion, bin: "php", args: ["--version"] });
-  if (d.javaVersion) p.push({ tool: "Java", want: d.javaVersion, bin: "java", args: ["-version"] });
+  // Java's source-target (sourceCompatibility / maven.compiler.source) is a
+  // minimum: bytecode targeting 17 runs on JDK 17+. Probe as a floor so a
+  // newer installed JDK reads as ok.
+  if (d.javaVersion) p.push({ tool: "Java", want: `>=${d.javaVersion}`, bin: "java", args: ["-version"] });
   if (d.dotnetVersion) p.push({ tool: ".NET", want: d.dotnetVersion, bin: "dotnet", args: ["--version"] });
   if (d.denoVersion) p.push({ tool: "Deno", want: d.denoVersion, bin: "deno", args: ["--version"] });
   if (d.pkgManager && !d.nodeIsToolingOnly)

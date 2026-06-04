@@ -29,6 +29,16 @@ export function normalizeNodeVersion(spec: string): string {
   let t = spec.trim().replace(/^v/, "");
   if (!t) return "lts/*";
 
+  // OR-disjunction (e.g. "20 || 22", "^16 || ^18", ">=14 <16 || >=18"). Pick the
+  // rightmost non-empty clause — by convention libraries list low-to-high, so
+  // the highest supported major is on the right — and normalize that. Without
+  // this, the literal "20 || 22" falls through to the catch-all and trips the
+  // safe-version-token security gate.
+  if (t.includes("||")) {
+    const clauses = t.split("||").map((c) => c.trim()).filter(Boolean);
+    if (clauses.length > 1) return normalizeNodeVersion(clauses[clauses.length - 1]);
+  }
+
   if (/^(lts|node|system)(\/|\*|$|-)/i.test(t)) return t;
   if (/^\d+\.\d+\.\d+/.test(t)) return t;
   if (/^\d+\.\d+$/.test(t)) return t;
@@ -59,6 +69,11 @@ export function normalizeNodeVersion(spec: string): string {
 /** Normalize Gemfile ruby version requirements to an installable token. */
 export function normalizeRubyVersion(spec: string): string {
   const t = spec.trim().replace(/^v/, "");
+  // Pessimistic operator: `~> 3.3` ≡ `>= 3.3, < 4.0`. Treat as the lower bound.
+  // Without this, the literal "~> 3.3" falls through and trips the
+  // safe-version-token security gate, blocking setup on real Gemfiles.
+  const pessimistic = t.match(/^~>\s*v?(\d+(?:\.\d+){0,2})/);
+  if (pessimistic) return pessimistic[1];
   const lowerBound = t.match(/>=?\s*v?(\d+(?:\.\d+){0,2})/);
   if (lowerBound) return lowerBound[1];
   const concrete = t.match(/^(\d+(?:\.\d+){0,2})/);

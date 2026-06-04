@@ -170,6 +170,66 @@ const RULES: RecoveryRule[] = [
     remediation: "Check your registry auth (npm whoami) or .npmrc token, then re-run",
   },
   {
+    // Hit by any repo that pins a packageManager in package.json (yarn berry,
+    // pnpm) when corepack isn't on yet. Common on fresh Node 18+ installs —
+    // corepack ships with Node but is disabled by default, so the first install
+    // dies with a confusing "this project is configured to use yarn …" or
+    // "Internal Error: This project's package.json defines …" line.
+    id: "corepack-disabled",
+    description: "The packageManager pinned in package.json needs corepack enabled",
+    match: /This project's package\.json defines "packageManager"|This project is configured to use (?:yarn|pnpm|bun), but it isn't installed|corepack: command not found|Usage Error: This project is configured to use|Cannot find module 'corepack'/i,
+    remediation:
+      "Enable corepack and let it shim the right package manager: corepack enable  (then re-run devhelp)",
+  },
+  {
+    // PEP 668 — Debian/Ubuntu 23+, Fedora 38+, Arch, etc. Newer system Pythons
+    // refuse `pip install` outside a venv with "error:
+    // externally-managed-environment". The fix devhelp already does for
+    // pyproject/requirements paths is to run inside .venv, so this is mostly hit
+    // when a repo's own postInstall or CI command pip-installs at the system
+    // level.
+    id: "python-externally-managed",
+    description: "This Python is externally managed — pip refuses to install at the system level",
+    match: /error: externally-managed-environment|This environment is externally managed/i,
+    remediation:
+      "Install into a venv instead: python3 -m venv .venv && . .venv/bin/activate && pip install …  (or use pipx for app tools)",
+  },
+  {
+    // React Native / Expo iOS builds need CocoaPods. `pod: command not found`
+    // on macOS is a fresh-Mac newcomer hit; the install is `brew install
+    // cocoapods` (the gem path is brittle on Apple Silicon Ruby).
+    id: "cocoapods-not-installed",
+    description: "CocoaPods isn't installed, so iOS deps can't be fetched",
+    match: /^pod: (?:command )?not found|pod: command not found|'pod' is not recognized/im,
+    remediation: isMac()
+      ? "Install CocoaPods: brew install cocoapods, then re-run"
+      : "CocoaPods is only used for iOS builds — switch to a Mac, or skip the iOS step",
+  },
+  {
+    // `git: command not found` from the clone step is its own class — the user
+    // doesn't even have git, the generic command-not-found rule's "try brew
+    // install <name>" hint is fine but a tailored one names the package.
+    id: "git-not-installed",
+    description: "git isn't installed, so devhelp can't clone the repo",
+    match: /^git: (?:command )?not found|git: command not found|'git' is not recognized/im,
+    remediation: isMac()
+      ? "Install git: xcode-select --install  (or brew install git), then re-run"
+      : isLinux()
+        ? "Install git: apt install git / dnf install git / pacman -S git, then re-run"
+        : "Install git from git-scm.com, then re-run",
+  },
+  {
+    // Building large Next.js / Storybook / Vite monorepos commonly blows past
+    // v8's default heap and dies with "FATAL ERROR: Reached heap limit
+    // Allocation failed" or "JavaScript heap out of memory". The fix is a
+    // NODE_OPTIONS bump, not a re-run.
+    id: "node-oom",
+    description: "Node ran out of heap memory during the build",
+    match: /FATAL ERROR:.*Reached heap limit.*Allocation failed|JavaScript heap out of memory|ineffective mark-compacts near heap limit/i,
+    remediation:
+      "Raise the v8 heap and re-run the failed step: NODE_OPTIONS=--max-old-space-size=8192 <cmd>  (8GB; lower to 4096 if you have less RAM)",
+  },
+  {
     // Generic safety net for any "<tool>: command not found" we don't have a
     // tailored rule for. Ordered LAST so specific rules (docker, build tools,
     // pkg-config, repo-not-found) always win. The panel already prints the cause

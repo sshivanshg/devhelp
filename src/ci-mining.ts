@@ -182,7 +182,12 @@ export function classify(cmd: string): "test" | "build" | "install" | "other" {
     /^(\.\/)?(gradlew|mvnw)\s+.*\b(test|verify)\b/.test(c) ||
     /^(gradle|mvn)\s+.*\b(test|verify)\b/.test(c) ||
     /^make\s+(test|check)\b/.test(c) ||
-    /^ctest\b/.test(c)
+    /^ctest\b/.test(c) ||
+    // Turbo / Nx — the runners modern JS monorepos drive from CI. We already
+    // detect turbo.json / nx.json as the monorepo layer; recognizing the
+    // matching CI commands lets fillFromCI backfill an empty testCommand.
+    /^turbo\s+(run\s+)?test\b/.test(c) ||
+    /^nx\s+(run-many\s+)?(.*--target[= ]test\b|test\b)/.test(c)
   ) {
     return "test";
   }
@@ -196,7 +201,9 @@ export function classify(cmd: string): "test" | "build" | "install" | "other" {
     /^(\.\/)?(gradlew|mvnw)\s+.*\b(build|package|assemble)\b/.test(c) ||
     /^(gradle|mvn)\s+.*\b(build|package|assemble)\b/.test(c) ||
     /^make\s+(build|all)?\b/.test(c) ||
-    /^mix\s+compile\b/.test(c)
+    /^mix\s+compile\b/.test(c) ||
+    /^turbo\s+(run\s+)?build\b/.test(c) ||
+    /^nx\s+(run-many\s+)?(.*--target[= ]build\b|build\b)/.test(c)
   ) {
     return "build";
   }
