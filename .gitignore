@@ -6,11 +6,9 @@ dist/
 .DS_Store
 .npmrc
 CLAUDE.md
-# Test suite, fixtures, and the stress-test harness are kept local and not
-# tracked in the repo. The npm package already excludes them (package.json
-# "files" only ships dist/), and CI relies on the build + CLI smoke tests.
-test/
-test-fixtures/
+# Local-only: the stress-test sweep harness and trial-run findings stay out
+# of the repo. The npm package already excludes anything outside dist/ via
+# package.json "files".
 stress-test/
 overnight-log.md
 docs/trial-*.md

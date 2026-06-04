@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "dev": "deno run --watch --allow-net --allow-read src/main.ts",
+    "test": "deno test --allow-net",
+    "start": "deno run --allow-net --allow-read src/main.ts"
+  },
+  "imports": {
+    "std/": "https://deno.land/std@0.220.0/"
+  }
+}

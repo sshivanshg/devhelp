@@ -1,0 +1,8 @@
+workspace(name = "my_project")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "rules_python",
+    sha256 = "abc",
+    strip_prefix = "rules_python-0.27.0",
+    url = "https://github.com/bazelbuild/rules_python/archive/0.27.0.tar.gz",
+)

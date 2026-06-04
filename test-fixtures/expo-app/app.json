@@ -1,0 +1,8 @@
+{
+  "expo": {
+    "name": "MyExpoApp",
+    "slug": "my-expo-app",
+    "version": "1.0.0",
+    "platforms": ["ios", "android", "web"]
+  }
+}

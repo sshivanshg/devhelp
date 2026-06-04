@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [18, 20, 22]
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +27,9 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build
 
@@ -35,7 +38,11 @@ jobs:
           node "$GITHUB_WORKSPACE/dist/cli.js" --version
           node "$GITHUB_WORKSPACE/dist/cli.js" --help
 
+      # Setup-flow smoke tests assume a bash-y filesystem (/tmp). The CLI's
+      # own setup commands use bash syntax, so they're already gated to
+      # WSL/Git-Bash on Windows — exclude them from the native Windows job.
       - name: Smoke test — recognized stack should exit 0
+        if: matrix.os != 'windows-latest'
         run: |
           mkdir -p /tmp/smoke && cd /tmp/smoke
           echo "20.11.1" > .nvmrc
@@ -44,6 +51,7 @@ jobs:
           node "$GITHUB_WORKSPACE/dist/cli.js" --dry-run --cwd /tmp/smoke "set up this project"
 
       - name: Smoke test — unrecognized stack should exit non-zero
+        if: matrix.os != 'windows-latest'
         run: |
           mkdir -p /tmp/unsupported && cd /tmp/unsupported
           echo "just some prose, no manifest devhelp understands" > README.md

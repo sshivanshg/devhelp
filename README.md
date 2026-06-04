@@ -12,6 +12,10 @@
 **Clone an OSS repo. Get a working dev environment.**
 Fully deterministic. Honest about what it can't do.
 
+[![npm](https://img.shields.io/npm/v/devhelp-cli.svg)](https://www.npmjs.com/package/devhelp-cli)
+[![CI](https://github.com/sshivanshg/devhelp/actions/workflows/ci.yml/badge.svg)](https://github.com/sshivanshg/devhelp/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 [Install](#install) · [Receipts](#receipts) · [Why not mise?](#why-not-mise) · [How it works](#how-it-works) · [Examples](#examples) · [When it can't finish](#when-it-cant-finish) · [Contributing](#contributing)
 
 <br>

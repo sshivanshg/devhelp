@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/sshivanshg/devhelp/main/recipes/devhelp.schema.json",
+  "title": ".devhelp.yml",
+  "description": "Project-specific setup recipe. Committed at the repo root as .devhelp.yml or .devhelp.yaml, or shipped under recipes/<owner>__<repo>.yml in the devhelp registry. Parser is intentionally a small YAML subset: scalars + string lists at the top level only.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "dev": {
+      "type": "string",
+      "description": "Command to start the dev server (e.g. 'pnpm dev'). Overrides what detection inferred."
+    },
+    "test": {
+      "type": "string",
+      "description": "Command to run the test suite (e.g. 'pnpm test'). Overrides what detection inferred."
+    },
+    "build": {
+      "type": "string",
+      "description": "Command to produce a production build (e.g. 'pnpm build'). Overrides what detection inferred."
+    },
+    "postInstall": {
+      "type": "array",
+      "description": "Setup steps that run after install/env/codegen, in order. Each runs with the same trust as the repo's own install scripts — keep steps minimal and verifiable (a seed script, a codegen command).",
+      "items": { "type": "string" }
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text reminders surfaced in the final panel. These never execute, so they're safe to add freely — use them for caveats no detector can infer (e.g. 'Postgres must be running first: docker compose up -d db').",
+      "items": { "type": "string" }
+    }
+  }
+}

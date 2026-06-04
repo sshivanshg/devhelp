@@ -16,6 +16,9 @@ actually pick should "just work."
 
 ## The format
 
+A [JSON Schema](./devhelp.schema.json) describes the supported keys; point your
+editor at it for inline validation and autocomplete.
+
 ```yaml
 # Command overrides (each optional) — surfaced in the final panel:
 dev: pnpm dev

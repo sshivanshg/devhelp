@@ -1,0 +1,5 @@
+platform :ios, min_ios_version_supported
+require_relative '../node_modules/react-native/scripts/react_native_pods'
+target 'MyRNApp' do
+  use_react_native!(:path => '../node_modules/react-native')
+end

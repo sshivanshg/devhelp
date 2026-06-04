@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-06-04
+
 ### Added
 - **Bundled recipe registry.** devhelp now ships a curated set of `.devhelp.yml` recipes (under `recipes/`, keyed by `owner/repo`) and applies the matching one automatically when a repo doesn't commit its own. This is the reliability floor: the popular repos newcomers actually pick get the repo-specific dev/test/build commands and setup notes even before their maintainers adopt devhelp. A repo's own committed `.devhelp.yml` always wins; the bundled one is only the fallback, and devhelp says when it uses one. The owner/repo is taken from the request, or recovered from the checkout's `origin` remote so it also helps when you're fixing a repo you already cloned.
 - **CI-workflow mining.** The `run:` steps in `.github/workflows/*.yml` are commands that must pass on every PR, so they're known-good by construction. devhelp now parses them (inline and block-scalar forms) and uses them to fill a missing `test`/`build` command — e.g. a Makefile-based project whose real test command is `make test`, which no manifest could reveal. Conservative by design: it only fills a gap detection left (never overrides a recipe or a detected command), skips anything that won't reproduce locally (matrix/secret interpolation, coverage uploaders, `&&` chains), never touches the install command, and never auto-runs a mined command. The mined commands are recorded in the run-log.
