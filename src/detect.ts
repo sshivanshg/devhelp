@@ -6,6 +6,7 @@ import {
   exists,
   fileExistsAny,
   listDirs,
+  parseJson,
   stripJsonComments,
 } from "./detectors/shared.js";
 
@@ -319,7 +320,7 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
 
   let pkg: any;
   try {
-    pkg = JSON.parse(pkgRaw);
+    pkg = parseJson(pkgRaw);
   } catch {
     return;
   }
@@ -435,7 +436,7 @@ async function detectNode(dir: string, out: Detected): Promise<void> {
     const appJsonRaw = await tryRead(path.join(dir, "app.json"));
     if (appJsonRaw) {
       try {
-        const aj = JSON.parse(appJsonRaw);
+        const aj = parseJson(appJsonRaw);
         if (aj?.expo) isExpoApp = true;
       } catch { /* ignore */ }
     }
@@ -719,7 +720,7 @@ async function detectPostInstall(dir: string, out: Detected): Promise<void> {
     const rootPkg = await tryRead(path.join(dir, "package.json"));
     if (rootPkg) {
       try {
-        const pkg = JSON.parse(rootPkg);
+        const pkg = parseJson(rootPkg);
         out.prismaSeedConfigured = !!pkg?.prisma?.seed;
       } catch {
         /* ignore */
@@ -790,7 +791,7 @@ async function detectDevcontainer(dir: string, out: Detected): Promise<void> {
   if (!raw) return;
   let dc: any;
   try {
-    dc = JSON.parse(stripJsonComments(raw));
+    dc = parseJson(stripJsonComments(raw));
   } catch {
     return;
   }
@@ -1041,7 +1042,7 @@ async function detectPHP(root: string, out: Detected): Promise<void> {
   if (!composerRaw) return;
   let composer: any;
   try {
-    composer = JSON.parse(composerRaw);
+    composer = parseJson(composerRaw);
   } catch {
     return;
   }
@@ -1258,7 +1259,7 @@ async function detectDotnet(root: string, out: Detected): Promise<void> {
   const globalJsonRaw = await tryRead(path.join(root, "global.json"));
   if (globalJsonRaw) {
     try {
-      const gj = JSON.parse(globalJsonRaw);
+      const gj = parseJson(globalJsonRaw);
       const v: string | undefined = gj?.sdk?.version;
       if (v) dotnetVersion = v.split(".")[0];
     } catch {
@@ -1321,7 +1322,7 @@ async function detectDart(root: string, out: Detected): Promise<void> {
     const fvm = await tryRead(path.join(root, ".fvm", "fvm_config.json"));
     if (fvm) {
       try {
-        const cfg = JSON.parse(fvm);
+        const cfg = parseJson(fvm);
         sdkVersion = cfg.flutterSdkVersion ?? cfg.flutter;
       } catch {
         /* ignore */
@@ -1369,14 +1370,14 @@ async function detectDeno(root: string, out: Detected): Promise<void> {
   let config: any = {};
   if (denoJson) {
     try {
-      config = JSON.parse(denoJson);
+      config = parseJson(denoJson);
     } catch {
       /* ignore */
     }
   } else if (denoJsonc) {
     const stripped = denoJsonc.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     try {
-      config = JSON.parse(stripped);
+      config = parseJson(stripped);
     } catch {
       /* ignore */
     }
@@ -1772,7 +1773,7 @@ async function detectR(root: string, out: Detected): Promise<void> {
   let rVersion: string | undefined;
   if (hasRenvLock) {
     try {
-      const lock = JSON.parse((await tryRead(path.join(root, "renv.lock"))) ?? "{}");
+      const lock = parseJson((await tryRead(path.join(root, "renv.lock"))) ?? "{}");
       rVersion = lock?.R?.Version?.split(".").slice(0, 2).join(".");
     } catch { /* ignore */ }
   }

@@ -8,7 +8,7 @@ import { execa } from "execa";
 import { simpleGit } from "simple-git";
 import ora from "ora";
 import { detect, isDetectionEmpty, type Detected, type PkgManager } from "./detect.js";
-import { findRecovery } from "./recovery.js";
+import { findRecovery, dockerInstallOneLiner } from "./recovery.js";
 import {
   detectSystemPackageManager,
   systemInstallCommand,
@@ -29,6 +29,8 @@ import { writeRunLog, type RunLogPayload } from "./run-log.js";
 import { findUnsafeVersionField } from "./versions.js";
 import { writeDevhelpLock, checkLockDrift, LOCK_FILENAME } from "./lockfile.js";
 import { loadRecipe, type DevhelpRecipe } from "./recipe.js";
+import { lookupRegistryRecipe, repoSlugFromRemote } from "./registry.js";
+import { mineCI, fillFromCI, type CIMined } from "./ci-mining.js";
 import { verifyTests, verifyDevServer, type VerifyCheck } from "./verify.js";
 import { writeVscodeLaunch } from "./vscode.js";
 import { detectSecretsProvider, secretsCommand } from "./secrets.js";
@@ -68,6 +70,13 @@ interface PlaybookCtx {
   // removed before returning so a dry run leaves the working dir untouched.
   dryRunTempClone?: string;
   detected?: Detected;
+  // owner/repo of the project being set up — from the request, or recovered
+  // from the checkout's git remote. Drives the bundled-recipe lookup.
+  repoSlug?: { owner: string; repo: string };
+  // Maintainer reminders surfaced in the final panel (from a recipe's notes:).
+  notes: string[];
+  // Commands mined from the repo's CI workflows (recorded in the run-log).
+  ciMined?: CIMined;
   done: string[];
   warnings: string[];
   failedSteps: { name: string; error: string; cause?: string; command?: string; recovery?: string }[];
@@ -97,6 +106,7 @@ export async function runSetup(opts: SetupOptions): Promise<number> {
     projectDir: opts.cwd,
     cloned: false,
     cloneSkipped: false,
+    notes: [],
     done: [],
     warnings: [],
     failedSteps: [],
@@ -132,10 +142,29 @@ export async function runSetup(opts: SetupOptions): Promise<number> {
     );
   }
 
-  // Project recipe: maintainer-declared overrides + extra steps. Applied to the
-  // detection result so the rest of the flow (panel, lock, tasks) sees them.
-  const recipe = await loadRecipe(ctx.projectDir);
-  if (recipe) applyRecipe(ctx.detected, recipe);
+  // Recipe resolution, highest precedence first:
+  //   1. the repo's own committed .devhelp.yml (the maintainer's explicit intent)
+  //   2. devhelp's bundled recipe for this owner/repo (the curated reliability floor)
+  // A committed recipe always wins — the bundled one is only the fallback for the
+  // (common) case where a popular repo hasn't shipped its own yet. Both are
+  // applied identically: command overrides merge into detection, postInstall
+  // steps run last, notes surface in the panel.
+  const committed = await loadRecipe(ctx.projectDir);
+  const recipe = committed ?? (await loadBundledRecipe(ctx));
+  if (recipe) {
+    applyRecipe(ctx.detected, recipe);
+    ctx.notes.push(...recipe.notes);
+  }
+
+  // CI-workflow mining: the build/test commands a repo runs in .github/workflows
+  // are known-good (they gate every PR). Use them only to fill gaps detection
+  // left — never to override a recipe or a command detection already found.
+  const ci = await mineCI(ctx.projectDir);
+  if (ci) {
+    ctx.ciMined = ci;
+    const filled = fillFromCI(ctx.detected, ci);
+    if (filled.length) ctx.done.push(`ci-workflow: filled ${filled.join(", ")}`);
+  }
 
   // If a .devhelp.lock is present, warn when detection has drifted from it.
   for (const drift of await checkLockDrift(ctx.projectDir, ctx.detected)) {
@@ -256,13 +285,22 @@ export async function runSetup(opts: SetupOptions): Promise<number> {
     candidates.push({ title: "Starting services (docker compose)", critical: true, run: (c, task) => startServices(c, task) });
   }
   if (d.prismaSchemas.length) {
-    candidates.push({ title: "Generating Prisma client", run: (c, task) => prismaGenerate(c, task) });
+    // Critical: a failed `prisma generate` means the client isn't generated and
+    // the dev server crashes on boot — exactly the "forgot to prisma generate"
+    // failure devhelp exists to prevent. It must never sit under a green READY.
+    candidates.push({ title: "Generating Prisma client", critical: true, run: (c, task) => prismaGenerate(c, task) });
   }
   if (ctx.withServices && (d.prismaSchemas.length || d.migrationCommands.length)) {
     candidates.push({ title: "Applying database migrations", critical: true, run: (c, task) => dbProvision(c, task) });
   }
   if (d.hasPlaywright) {
-    candidates.push({ title: "Installing Playwright browsers", run: (c, task) => playwrightInstall(c, task) });
+    // Playwright browsers are genuinely optional — the dev server boots without
+    // them — so a failure shouldn't block READY. But it must not vanish either:
+    // softFail records it as a visible panel warning instead of swallowing it.
+    candidates.push({
+      title: "Installing Playwright browsers",
+      run: softFail("Playwright browser install", (c, task) => playwrightInstall(c, task)),
+    });
   }
   if (ctx.secrets && d.envTemplates.length) {
     candidates.push({ title: "Populating .env from secrets provider", run: (c, task) => populateSecrets(c, task) });
@@ -547,6 +585,9 @@ function buildRunLogPayload(ctx: PlaybookCtx, status: RunLogPayload["status"]): 
     executedSteps: [...ctx.done],
     failedSteps: [...ctx.failedSteps],
     warnings: [...ctx.warnings],
+    notes: [...ctx.notes],
+    repoSlug: ctx.repoSlug ? `${ctx.repoSlug.owner}/${ctx.repoSlug.repo}` : undefined,
+    ci: ctx.ciMined,
     env: {
       platform: process.platform,
       arch: process.arch,
@@ -596,6 +637,30 @@ function critical(
         recovery: finalMatch?.remediation,
       });
       throw lastError;
+    }
+  };
+}
+
+/**
+ * Wrap a genuinely-optional step (e.g. Playwright browsers) so a failure is
+ * surfaced as a warning in the final panel instead of being silently swallowed.
+ * The run can still reach READY — the dev server boots without it — but we never
+ * hide the failure. "Never a fake-green panel on a real failure" applies here too:
+ * a bare non-critical `run` whose body throws would otherwise leave no trace in
+ * the panel, exit code, or run-log.
+ */
+function softFail(
+  label: string,
+  fn: (c: PlaybookCtx, task: any) => Promise<void>,
+): (c: PlaybookCtx, task: any) => Promise<void> {
+  return async (c, task) => {
+    try {
+      await fn(c, task);
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      const { cause } = summarizeFailure(err);
+      const fix = findRecovery(err)?.remediation;
+      c.warnings.push(`${label} didn't finish: ${cause}${fix ? ` — ${fix}` : ""}`);
     }
   };
 }
@@ -757,6 +822,38 @@ function applyRecipe(d: Detected, recipe: DevhelpRecipe): void {
   if (recipe.build) d.buildCommand = recipe.build;
 }
 
+/**
+ * Look up devhelp's bundled recipe for the project being set up. The owner/repo
+ * comes from the request when one was named; otherwise we recover it from the
+ * checkout's `origin` remote so the registry also helps when you're fixing a
+ * repo you already cloned. Announces the fallback so it's never silent.
+ */
+async function loadBundledRecipe(ctx: PlaybookCtx): Promise<DevhelpRecipe | null> {
+  if (!ctx.repoSlug) ctx.repoSlug = (await repoSlugFromGit(ctx.projectDir)) ?? undefined;
+  const slug = ctx.repoSlug;
+  if (!slug) return null;
+  const recipe = await lookupRegistryRecipe(slug.owner, slug.repo);
+  if (!recipe) return null;
+  ctx.done.push(`bundled recipe for ${slug.owner}/${slug.repo}`);
+  say(
+    ctx,
+    chalk.cyan("  ℹ"),
+    `Using devhelp's bundled recipe for ${chalk.bold(`${slug.owner}/${slug.repo}`)}` +
+      chalk.dim(" (the repo ships no .devhelp.yml of its own)"),
+  );
+  return recipe;
+}
+
+/** owner/repo from the checkout's `origin` remote, or null. Never throws. */
+async function repoSlugFromGit(dir: string): Promise<{ owner: string; repo: string } | null> {
+  try {
+    const url = await simpleGit({ baseDir: dir }).remote(["get-url", "origin"]);
+    return url ? repoSlugFromRemote(url.trim()) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Run tests + dev-server probe to prove the setup actually works. */
 async function runVerification(ctx: PlaybookCtx): Promise<VerifyCheck[]> {
   const d = ctx.detected!;
@@ -802,6 +899,8 @@ async function runCloneStep(ctx: PlaybookCtx): Promise<void> {
     say(ctx, "");
     return;
   }
+  // Stash the slug so the bundled-recipe lookup can key on it.
+  if (repo.owner && repo.repo) ctx.repoSlug = { owner: repo.owner, repo: repo.repo };
   // Archive check — only for GitHub URLs and only when we have owner/name on hand.
   if (repo.owner && repo.repo) {
     const archived = await checkGitHubArchived(repo.owner, repo.repo);
@@ -1099,8 +1198,9 @@ async function startServices(ctx: PlaybookCtx, task: any): Promise<void> {
   // Skip the probe in dry-run; just display the v2 form.
   const compose = ctx.dryRun ? { base: "docker compose", wait: true } : await detectCompose();
   if (!compose) {
-    // Can't start what isn't installed — surface it, don't fail the whole run.
-    ctx.warnings.push("Docker not found — install Docker to start services, then `docker compose up -d`");
+    // Can't start what isn't installed — surface it with the exact one-line
+    // install (the #1 newcomer blocker), don't fail the whole run.
+    ctx.warnings.push(`Docker not found — ${dockerInstallOneLiner()}, then \`docker compose up -d\``);
     task.title = "Services — Docker not installed (skipped)";
     return;
   }
@@ -1665,6 +1765,11 @@ function printInformPanel(ctx: PlaybookCtx): void {
   lines.push(chalk.cyan.bold(d.informTitle ?? "Info"));
   lines.push("");
   for (const l of d.informBody ?? []) lines.push(l);
+  if (ctx.notes.length) {
+    lines.push("");
+    lines.push(chalk.bold("  Notes:"));
+    for (const n of ctx.notes) lines.push(chalk.dim(`  • ${n}`));
+  }
   if (ctx.warnings.length) {
     lines.push("");
     for (const w of ctx.warnings) lines.push(chalk.yellow(`  ! ${w}`));
@@ -1866,6 +1971,14 @@ function printReadyPanel(ctx: PlaybookCtx): void {
           : chalk.red(`  ✗ ${c.name} — ${c.detail}`),
       );
     }
+  }
+
+  // Maintainer notes (from a recipe's notes:) — the "before you start" caveats
+  // a first-time contributor needs but no detector can infer.
+  if (ctx.notes.length) {
+    lines.push("");
+    lines.push(chalk.bold("  Notes:"));
+    for (const n of ctx.notes) lines.push(chalk.dim(`  • ${n}`));
   }
 
   if (ctx.warnings.length) {

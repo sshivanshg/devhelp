@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { runSetup, runDoctor, formatFatalError } from "./setup.js";
+import { runInit } from "./init.js";
 import { runMcpServer } from "./mcp.js";
 import { pkgVersion } from "./versions.js";
 
@@ -28,6 +29,25 @@ program
       const message = err instanceof Error ? err.message : String(err);
       if (opts.json) console.log(JSON.stringify({ status: "ERROR", error: message }, null, 2));
       else console.error(chalk.red("\ndevhelp doctor failed:"), message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("init")
+  .description("Generate a .devhelp.yml for this repo from detection + CI, so contributors set it up in one command")
+  .option("--cwd <dir>", "Working directory", process.cwd())
+  .option("--force", "Overwrite an existing .devhelp.yml", false)
+  .option("--json", "Emit the generated recipe as JSON", false)
+  .action(async (_opts, command) => {
+    const opts = command.optsWithGlobals();
+    try {
+      const exitCode = await runInit({ cwd: opts.cwd, force: opts.force, json: opts.json });
+      if (exitCode !== 0) process.exit(exitCode);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (opts.json) console.log(JSON.stringify({ status: "ERROR", error: message }, null, 2));
+      else console.error(chalk.red("\ndevhelp init failed:"), message);
       process.exit(1);
     }
   });

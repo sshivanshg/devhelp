@@ -32,6 +32,19 @@ export interface RecoveryMatch {
 const isMac = () => process.platform === "darwin";
 const isLinux = () => process.platform === "linux";
 
+/**
+ * The OS-specific one-line Docker install. Single-sourced so the recovery rule
+ * and the proactive "services skipped — Docker missing" warning give identical
+ * guidance.
+ */
+export function dockerInstallOneLiner(): string {
+  return isMac()
+    ? "brew install --cask docker  (or download Docker Desktop from docker.com)"
+    : isLinux()
+      ? "curl -fsSL https://get.docker.com | sh"
+      : "install Docker Desktop from docker.com";
+}
+
 const RULES: RecoveryRule[] = [
   {
     id: "xcode-clt-missing",
@@ -63,11 +76,37 @@ const RULES: RecoveryRule[] = [
         : "Install OpenSSL development headers and pkg-config",
     systemDeps: ["openssl-dev", "pkg-config"],
   },
+  {
+    // A C/C++ toolchain is missing — the usual cause of node-gyp/native-module
+    // builds failing on a fresh Linux box that has Node but no compiler.
+    id: "build-tools-missing",
+    description: "No C/C++ compiler toolchain (make / gcc) for a native build",
+    match: /make: .*command not found|make: not found|\bg?cc1?(plus)?\b.*(?:not found|No such file)|\b(gcc|g\+\+|cc): .*(?:not found|No such file)|C compiler cannot create executables|no acceptable C compiler found|need to install the build-essential/i,
+    remediation: isMac()
+      ? "Run: xcode-select --install   (installs the compiler toolchain, then re-run devhelp)"
+      : isLinux()
+        ? "Install a compiler: apt install build-essential / dnf install gcc gcc-c++ make / pacman -S base-devel  — or re-run with --fix"
+        : "Install a C/C++ build toolchain (make + a C compiler), then re-run",
+    systemDeps: ["build-tools"],
+  },
 
   // --- Execution-path failures (hint-only; no safe automatic fix) -----------
   // These cover the common reasons a real setup stalls. Each maps to one
   // obvious next action so the INCOMPLETE panel never dead-ends on "check the
   // log". Ordered most-specific first; findRecovery returns the first match.
+  {
+    // Distinct from docker-daemon-down: here Docker isn't installed at all, so
+    // there's no daemon to start. The headline newcomer blocker — give the exact
+    // one-line install, not just "install Docker".
+    id: "docker-not-installed",
+    description: "Docker isn't installed, so services can't start",
+    match: /docker: (?:command )?not found|docker-compose: (?:command )?not found|(?:command not found|not found): docker|'docker' is not recognized|docker: The term/i,
+    remediation: isMac()
+      ? `Install Docker: ${dockerInstallOneLiner()}, open it, then re-run devhelp`
+      : isLinux()
+        ? `Install Docker: ${dockerInstallOneLiner()}  then \`sudo usermod -aG docker $USER\`, re-log in, then re-run devhelp`
+        : `${dockerInstallOneLiner()}, start it, then re-run devhelp`,
+  },
   {
     id: "docker-daemon-down",
     description: "Docker isn't running, so services couldn't start",
@@ -129,6 +168,20 @@ const RULES: RecoveryRule[] = [
     description: "The package registry rejected the request",
     match: /\b(401 Unauthorized|403 Forbidden)\b|code E401|code E403|authentication required|need auth/i,
     remediation: "Check your registry auth (npm whoami) or .npmrc token, then re-run",
+  },
+  {
+    // Generic safety net for any "<tool>: command not found" we don't have a
+    // tailored rule for. Ordered LAST so specific rules (docker, build tools,
+    // pkg-config, repo-not-found) always win. The panel already prints the cause
+    // line, which names the missing tool — so the fix can point at it.
+    id: "command-not-found",
+    description: "A required command isn't installed",
+    match: /\S+: (?:command )?not found|is not recognized as an internal or external command/i,
+    remediation: isMac()
+      ? "Install the missing command shown above (try: brew install <name>), then re-run devhelp"
+      : isLinux()
+        ? "Install the missing command shown above with your package manager (apt install / dnf install / pacman -S <name>), then re-run devhelp"
+        : "Install the missing command shown above, ensure it's on your PATH, then re-run devhelp",
   },
 ];
 

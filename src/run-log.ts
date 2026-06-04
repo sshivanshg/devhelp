@@ -15,6 +15,11 @@ export interface RunLogPayload {
   executedSteps: string[];
   failedSteps: { name: string; error: string; cause?: string; command?: string; recovery?: string }[];
   warnings: string[];
+  notes?: string[];
+  /** owner/repo, when known — drives the bundled-recipe lookup. */
+  repoSlug?: string;
+  /** Commands mined from the repo's CI workflows. */
+  ci?: { test?: string; build?: string; commands: string[] };
   verify?: { name: string; ok: boolean; detail: string }[];
   env: {
     platform: NodeJS.Platform;

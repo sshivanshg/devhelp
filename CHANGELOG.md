@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Bundled recipe registry.** devhelp now ships a curated set of `.devhelp.yml` recipes (under `recipes/`, keyed by `owner/repo`) and applies the matching one automatically when a repo doesn't commit its own. This is the reliability floor: the popular repos newcomers actually pick get the repo-specific dev/test/build commands and setup notes even before their maintainers adopt devhelp. A repo's own committed `.devhelp.yml` always wins; the bundled one is only the fallback, and devhelp says when it uses one. The owner/repo is taken from the request, or recovered from the checkout's `origin` remote so it also helps when you're fixing a repo you already cloned.
+- **CI-workflow mining.** The `run:` steps in `.github/workflows/*.yml` are commands that must pass on every PR, so they're known-good by construction. devhelp now parses them (inline and block-scalar forms) and uses them to fill a missing `test`/`build` command — e.g. a Makefile-based project whose real test command is `make test`, which no manifest could reveal. Conservative by design: it only fills a gap detection left (never overrides a recipe or a detected command), skips anything that won't reproduce locally (matrix/secret interpolation, coverage uploaders, `&&` chains), never touches the install command, and never auto-runs a mined command. The mined commands are recorded in the run-log.
+- **`devhelp init`.** Run it in a repo and get a working `.devhelp.yml` for free: it detects the stack (and mines CI) and writes a recipe pre-filled with the dev/test/build commands it found, plus commented scaffolding for the steps only a maintainer knows (a seed script, a "Postgres must be running" note). It then prints a README badge and a CONTRIBUTING snippet so adopting devhelp is a copy-paste. Won't overwrite an existing recipe without `--force`.
+- **`notes:` in `.devhelp.yml`.** A maintainer (or a bundled recipe) can declare free-text reminders — "Postgres must be running first: docker compose up -d db" — surfaced in the final panel. Notes never execute, so they're safe to add freely.
+
 ### Changed
+- **Newcomer-grade failure hints for missing tools.** New recovery rules give the exact one-line install when a setup is blocked by a missing tool, optimized for someone who's never configured a dev environment: Docker not installed (distinct from the daemon being down — the headline blocker, now with `brew install --cask docker` / `curl -fsSL https://get.docker.com | sh` per OS), a missing C/C++ toolchain (`make`/`gcc`, auto-fixable via `--fix`), and a generic `<tool>: command not found` catch-all that points at your OS package manager. The "Docker not found" warning when surfacing services now carries the same one-line install.
 - Renamed the internal setup runner module from the legacy AI-era naming to `setup.ts` (`runSetup` / `SetupOptions`) with no behavior change.
 
 ### Fixed

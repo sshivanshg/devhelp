@@ -1,0 +1,7 @@
+# denoland/deno — the Deno runtime itself (a Rust project, not a JS one).
+# Detection correctly sees Cargo and runs `cargo build`; these notes add the
+# context a first-time contributor needs but no detector can infer.
+notes:
+  - "Deno is built with Cargo and bundles V8 — the first `cargo build` pulls a large prebuilt V8 (multiple GB) and can take 20+ minutes."
+  - "You need a lot of RAM/disk for the first build; a release build (`cargo build --release`) is heavier still."
+  - "Run the test suite with `cargo test` (see tests/ and the contributing guide for the full integration suite)."

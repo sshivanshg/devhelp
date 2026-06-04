@@ -24,10 +24,20 @@ export interface DevhelpRecipe {
   dev?: string;
   test?: string;
   build?: string;
+  /**
+   * Free-text reminders surfaced in the final panel — e.g. "Postgres must be
+   * running: docker compose up -d db". The thing a maintainer would tell a
+   * first-time contributor that no detector can infer.
+   */
+  notes: string[];
 }
 
 const SCALAR_KEYS = new Set(["dev", "test", "build"]);
-const LIST_KEYS = new Set(["postinstall"]);
+// Maps a lowercased YAML list key to the recipe field it fills.
+const LIST_KEYS: Record<string, "postInstall" | "notes"> = {
+  postinstall: "postInstall",
+  notes: "notes",
+};
 
 function unquote(s: string): string {
   const t = s.trim();
@@ -46,8 +56,8 @@ function stripComment(line: string): string {
 
 /** Parse the supported subset. Unknown keys are ignored, not an error. */
 export function parseRecipe(text: string): DevhelpRecipe {
-  const recipe: DevhelpRecipe = { postInstall: [] };
-  let currentList: keyof DevhelpRecipe | null = null;
+  const recipe: DevhelpRecipe = { postInstall: [], notes: [] };
+  let currentList: "postInstall" | "notes" | null = null;
 
   for (const raw of text.split("\n")) {
     const line = stripComment(raw).replace(/\s+$/, "");
@@ -55,9 +65,9 @@ export function parseRecipe(text: string): DevhelpRecipe {
 
     // List item: indented "- value"
     const listItem = line.match(/^\s+-\s+(.*)$/);
-    if (listItem && currentList === "postInstall") {
+    if (listItem && currentList) {
       const v = unquote(listItem[1]);
-      if (v) recipe.postInstall.push(v);
+      if (v) recipe[currentList].push(v);
       continue;
     }
 
@@ -67,14 +77,15 @@ export function parseRecipe(text: string): DevhelpRecipe {
     const key = kv[1].toLowerCase();
     const value = kv[2];
 
-    if (LIST_KEYS.has(key)) {
-      currentList = "postInstall";
+    const listField = LIST_KEYS[key];
+    if (listField) {
+      currentList = listField;
       // Inline list form: "postInstall: [a, b]" — support the simple case too.
       const inline = value.match(/^\[(.*)\]$/);
       if (inline) {
         for (const part of inline[1].split(",")) {
           const v = unquote(part);
-          if (v) recipe.postInstall.push(v);
+          if (v) recipe[listField].push(v);
         }
         currentList = null;
       }
@@ -91,7 +102,7 @@ export function parseRecipe(text: string): DevhelpRecipe {
 
 /** True when the recipe actually declares anything actionable. */
 export function recipeIsEmpty(r: DevhelpRecipe): boolean {
-  return r.postInstall.length === 0 && !r.dev && !r.test && !r.build;
+  return r.postInstall.length === 0 && r.notes.length === 0 && !r.dev && !r.test && !r.build;
 }
 
 /** Load and parse the repo's recipe file, or null if none / unparseable. */

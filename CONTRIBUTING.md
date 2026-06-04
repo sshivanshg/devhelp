@@ -57,15 +57,15 @@ Keep precedence explicit. If two sources can name a version, document the order 
 - Match existing formatting; no formatter is enforced yet, but Prettier defaults are fine.
 - Comments only when the *why* is non-obvious. Identifiers should carry the *what*.
 
-## Tests
+## Verifying changes
 
-Tests run on `vitest`:
+CI type-checks, builds, and runs CLI smoke tests on every PR:
 
 ```bash
-npm test
+npm run typecheck && npm run build
 ```
 
-`test/detect-fixtures.test.ts` runs `detect()` against every fixture in `test-fixtures/` and asserts the expected stack — add a fixture and a row there when you add a detector. When you change detection, also paste a `devhelp --dry-run` run against a couple of real repos into the PR.
+When you change detection, paste a `devhelp --dry-run` run against a couple of real repos into the PR so reviewers can see the new behavior.
 
 ## Commits and PRs
 
